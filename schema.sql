@@ -7,6 +7,7 @@ create table profiles (
   focus_start time,
   focus_end time,
   bedtime time,
+  pet_slot_limit int not null default 1,
   created_at timestamptz not null default now()
 );
 
@@ -71,6 +72,7 @@ create table user_missions (
 create table coin_ledger (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
+  pet_id uuid references pets(id) on delete set null,
   amount int not null,
   reason text not null,
   created_at timestamptz not null default now()
@@ -106,5 +108,6 @@ create index idx_usage_logs_app_id on usage_logs(app_id);
 create index idx_user_missions_user_id on user_missions(user_id);
 create index idx_user_missions_mission_id on user_missions(mission_id);
 create index idx_coin_ledger_user_id on coin_ledger(user_id);
+create index idx_coin_ledger_pet_id on coin_ledger(pet_id);
 create index idx_user_items_user_id on user_items(user_id);
 create index idx_user_items_item_id on user_items(item_id);
