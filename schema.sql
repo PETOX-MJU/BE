@@ -64,7 +64,8 @@ create table user_missions (
   mission_id uuid not null references missions(id) on delete cascade,
   status text not null default 'in_progress' check (status in ('in_progress', 'completed', 'failed')),
   coins_earned int not null default 0,
-  completed_at timestamptz
+  completed_at timestamptz,
+  unique (user_id, mission_id)
 );
 
 create table coin_ledger (
@@ -96,3 +97,14 @@ create table notification_settings (
   mission_alert boolean not null default true,
   report_alert boolean not null default true
 );
+
+-- FK 컬럼 인덱스
+create index idx_pets_user_id on pets(user_id);
+create index idx_user_detected_apps_app_id on user_detected_apps(app_id);
+create index idx_usage_logs_user_id on usage_logs(user_id);
+create index idx_usage_logs_app_id on usage_logs(app_id);
+create index idx_user_missions_user_id on user_missions(user_id);
+create index idx_user_missions_mission_id on user_missions(mission_id);
+create index idx_coin_ledger_user_id on coin_ledger(user_id);
+create index idx_user_items_user_id on user_items(user_id);
+create index idx_user_items_item_id on user_items(item_id);
