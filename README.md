@@ -48,7 +48,7 @@
 
 | 영역 | 기술 |
 |---|---|
-| 앱 | React Native |
+| 앱 | React Native (Android 전용) |
 | 화면 오버레이 | 다른 앱 위에 캐릭터를 띄우는 오버레이 기능 |
 | 사용시간 감지 | 숏폼 앱 실행 및 사용 시간 확인 |
 | 이미지 변환 | ML Kit Subject Segmentation (반려동물 사진 → 픽셀 캐릭터, On-device 처리, 외부 생성형 AI API 미사용) |
