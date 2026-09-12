@@ -1,0 +1,86 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    branches: [dev]
+    types: [opened, synchronize, reopened]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: |
+          git fetch origin ${{ github.base_ref }}:base
+          git log --oneline base...HEAD
+
+      - name: Get changed files
+        id: files
+        run: |
+          FILES=$(git diff --name-only base...HEAD | grep -E '\.(py|sql)$' | tr '\n' ' ')
+          echo "changed_files=${FILES}" >> $GITHUB_OUTPUT
+          echo "Changed files: ${FILES}"
+
+      - name: Generate diff
+        id: diff
+        run: |
+          git diff base...HEAD > pr-diff.txt
+          echo "diff_size=$(wc -c < pr-diff.txt)" >> $GITHUB_OUTPUT
+
+      - name: AI Code Review
+        if: steps.diff.outputs.diff_size > 0
+        env:
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const diff = fs.readFileSync('pr-diff.txt', 'utf8');
+            const files = '${{ steps.files.outputs.changed_files }}'.split(' ').filter(f => f);
+
+            const fileSections = files.map(f => {
+              const parts = diff.split('diff --git a/' + f);
+              const fileDiff = parts.length > 1 ? parts.slice(1).join('diff --git a/' + f) : '';
+              return '### :page_facing_up: ' + f + '\n\n```diff\n' + (fileDiff.substring(0, 5000) || '변경 없음') + '\n```\n';
+            }).join('\n---\n\n');
+
+            const prompt = 'You are an expert code reviewer for a Python + PostgreSQL + Supabase backend. Review the following PR diff for:\n\n1. Correctness — does the code do what it claims?\n2. Security — SQL injection, auth/authz gaps, data exposure, secret/key leaks\n3. Code quality — naming, DRY, complexity, error handling\n4. Testing — new code tested? edge cases?\n5. Database/Supabase — RLS policies, RPC functions, advisory locks, migrations\n\nPR context:\n- Base branch: ' + '${{ github.base_ref }}' + '\n- Head branch: ' + '${{ github.head_ref }}' + '\n- Author: ' + '${{ github.actor }}' + '\n\nChanged files: ' + files.join(', ') + '\n\n' + fileSections + '\n\nPlease provide:\n- A summary verdict (Approve / Request Changes / Comment)\n- File-by-file findings with line numbers where possible\n- Critical issues first, then warnings, then suggestions\n- Use 🟢 for OK, 🟡 for warning, 🔴 for critical';
+
+            const response = await fetch('https://api.moonshot.ai/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + process.env.MOONSHOT_API_KEY
+              },
+              body: JSON.stringify({
+                model: 'moonshot-v1-8k',
+                messages: [{ role: 'user', content: prompt }],
+                temperature: 0.3,
+                max_tokens: 4000
+              })
+            });
+
+            if (!response.ok) {
+              throw new Error('AI API error: ' + response.status + ' ' + response.statusText);
+            }
+
+            const result = await response.json();
+            const reviewBody = result.choices[0].message.content;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '## :robot: AI Code Review\n\n' + reviewBody + '\n\n---*\n*Reviewed by AI Agent (Moonshot)*'
+            });
