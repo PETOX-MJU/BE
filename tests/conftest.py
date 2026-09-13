@@ -28,8 +28,15 @@ def db_available() -> bool:
         return False
 
 
+_db_ok = db_available()
+
+# CI에서는 스킵을 허용하지 않는다. 스킵된 테스트는 없는 테스트와 같아서,
+# supabase start가 조용히 실패하면 잠금이 지워져도 초록으로 통과한다.
+if not _db_ok and os.getenv("CI"):
+    raise RuntimeError(f"CI인데 {LOCAL_DB_URL}에 붙지 못했다. supabase start를 확인할 것.")
+
 requires_db = pytest.mark.skipif(
-    not db_available(),
+    not _db_ok,
     reason="로컬 Supabase가 없다. `supabase start` 후 다시 실행할 것.",
 )
 
