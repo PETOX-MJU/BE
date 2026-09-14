@@ -20,17 +20,26 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # 공개 엔드포인트에서 가져와 로컬로 서명을 검증한다. 새 시크릿 불필요.
 security = HTTPBearer()
 jwks_client = PyJWKClient(f"{os.environ['SUPABASE_URL']}/auth/v1/.well-known/jwks.json")
+JWT_AUDIENCE = "authenticated"  # ADR-010: Supabase가 로그인 세션 토큰에 항상 넣는 aud 값
 
 
-def get_current_user_id(creds: HTTPAuthorizationCredentials = Depends(security)) -> str:
+def get_jwks_client() -> PyJWKClient:
+    """테스트에서 app.dependency_overrides로 교체하기 위한 진입점."""
+    return jwks_client
+
+
+def get_current_user_id(
+    creds: HTTPAuthorizationCredentials = Depends(security),
+    jwks: PyJWKClient = Depends(get_jwks_client),
+) -> str:
     token = creds.credentials
     try:
-        signing_key = jwks_client.get_signing_key_from_jwt(token)
+        signing_key = jwks.get_signing_key_from_jwt(token)
         payload = jwt.decode(
             token,
             signing_key.key,
             algorithms=["ES256"],  # 이 프로젝트 JWKS가 실제로 쓰는 알고리즘만 허용(curl로 확인)
-            audience="authenticated",
+            audience=JWT_AUDIENCE,
         )
     except jwt.PyJWTError as e:
         raise HTTPException(status_code=401, detail=f"invalid token: {e}")
