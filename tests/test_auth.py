@@ -11,7 +11,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
-from app.main import app, get_jwks_client
+from app.main import JWT_AUDIENCE, app, get_jwks_client
 
 client = TestClient(app)
 
@@ -50,7 +50,7 @@ def test_me_with_valid_token_returns_user_id():
 
     user_id = str(uuid.uuid4())
     token = jwt.encode(
-        {"sub": user_id, "aud": "authenticated"}, private_key, algorithm="ES256"
+        {"sub": user_id, "aud": JWT_AUDIENCE}, private_key, algorithm="ES256"
     )
 
     resp = client.get("/me", headers={"Authorization": f"Bearer {token}"})
@@ -77,7 +77,7 @@ def test_me_with_wrong_signing_key_is_rejected():
 
     # 공격자가 자기 개인키로 서명한 토큰 — 서버는 real_key의 공개키로만 검증하므로 불일치.
     forged = jwt.encode(
-        {"sub": str(uuid.uuid4()), "aud": "authenticated"},
+        {"sub": str(uuid.uuid4()), "aud": JWT_AUDIENCE},
         attacker_key,
         algorithm="ES256",
     )
