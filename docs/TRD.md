@@ -453,13 +453,11 @@ DEBUG=False
 
 ### 8.5 데이터베이스 마이그레이션
 
-- **현재**: schema.sql 직접 실행 (Supabase 대시보드)
-- **향후**: Alembic (SQLAlchemy 마이그레이션 도구) 도입 권장
+- **현재**: Supabase CLI 마이그레이션(`supabase/migrations/`)을 소스오브트루스로 사용. CI가 PR 검사 후 자동으로 push (ADR-007).
 
 ```bash
-alembic init migrations
-alembic revision --autogenerate -m "Initial schema"
-alembic upgrade head
+supabase migration new <name>
+supabase db push
 ```
 
 ---
