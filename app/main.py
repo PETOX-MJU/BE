@@ -29,7 +29,7 @@ def get_current_user_id(creds: HTTPAuthorizationCredentials = Depends(security))
         payload = jwt.decode(
             token,
             signing_key.key,
-            algorithms=["ES256", "RS256"],
+            algorithms=["ES256"],  # 이 프로젝트 JWKS가 실제로 쓰는 알고리즘만 허용(curl로 확인)
             audience="authenticated",
         )
     except jwt.PyJWTError as e:
