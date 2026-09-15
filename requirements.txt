@@ -6,3 +6,4 @@ python-dotenv
 supabase
 pydantic[email]
 pyjwt[crypto]
+httpx

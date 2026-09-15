@@ -1,5 +1,6 @@
 import os
 
+import httpx
 import jwt
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException
@@ -82,3 +83,64 @@ def signup(payload: SignUpRequest):
 @app.get("/me")
 def me(user_id: str = Depends(get_current_user_id)):
     return {"user_id": user_id}
+
+
+def call_weekly_report_rpc(access_token: str) -> list[dict]:
+    """weekly_report() RPC를 호출자 본인의 JWT로 호출한다.
+
+    ADR-011: 전역 supabase 클라이언트(anon key, 로그인 세션 없음)를 그대로 쓰면
+    Postgres에서 auth.uid()가 NULL이 돼서 0행만 나온다. 이 유저로 인증된
+    요청이어야 weekly_report()의 auth.uid() 필터가 본인 데이터를 잡는다.
+    전역 클라이언트를 mutate하지 않는 이유는 동시 요청 간 세션이 서로
+    덮어써지는 걸 막기 위해서다 — 요청마다 별도 HTTP 호출로 격리한다.
+    """
+    resp = httpx.post(
+        f"{os.environ['SUPABASE_URL']}/rest/v1/rpc/weekly_report",
+        headers={
+            "apikey": os.environ["SUPABASE_KEY"],
+            "Authorization": f"Bearer {access_token}",
+        },
+        json={},
+        timeout=5.0,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_weekly_report_rows(
+    creds: HTTPAuthorizationCredentials = Depends(security),
+) -> list[dict]:
+    """테스트에서 app.dependency_overrides로 교체하기 위한 진입점(ADR-010 get_jwks_client와 같은 패턴)."""
+    try:
+        return call_weekly_report_rpc(creds.credentials)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"report query failed: {e}")
+
+
+@app.get("/reports/weekly")
+def weekly_report(
+    user_id: str = Depends(get_current_user_id),
+    rows: list[dict] = Depends(get_weekly_report_rows),
+):
+    totals = {row["week"]: row["total_minutes"] for row in rows}
+    last_week = totals.get("지난주", 0)
+    this_week = totals.get("이번주", 0)
+
+    if last_week == 0:
+        change_pct = None
+        message = "지난주 사용 기록이 없어요. 이번주부터 시작해봐요!"
+    else:
+        change_pct = round((this_week - last_week) / last_week * 100, 1)
+        if change_pct == 0:
+            message = "지난주랑 똑같아요. 변화를 줘볼까요?"
+        elif change_pct < 0:
+            message = f"지난주보다 {abs(change_pct)}% 줄였어요!"
+        else:
+            message = f"지난주보다 {change_pct}% 늘었어요. 다음주엔 목표를 다시 세워봐요."
+
+    return {
+        "last_week_minutes": last_week,
+        "this_week_minutes": this_week,
+        "change_pct": change_pct,
+        "message": message,
+    }

@@ -23,7 +23,7 @@ jobs:
       - run: ruff check .
       - uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: 2.117.0
       # 평범한 postgres로는 안 된다. 테스트가 auth.users와 auth.uid(), authenticated
       # 롤을 쓰고 마이그레이션이 pg_cron을 건다. start가 마이그레이션까지 적용한다.
       - run: supabase start
