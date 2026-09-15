@@ -195,29 +195,48 @@ Content-Type: application/json
 
 ---
 
+#### 4.1.5 내 정보 확인
+```http
+GET /me
+Authorization: Bearer <token>
+```
+**응답**:
+```json
+{
+  "user_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+**목적**: JWT가 유효한지, 누구 것인지 확인 (ADR-010)
+
+---
+
+#### 4.1.6 주간 리포트
+```http
+GET /reports/weekly
+Authorization: Bearer <token>
+```
+**응답**:
+```json
+{
+  "last_week_minutes": 385,
+  "this_week_minutes": 260,
+  "change_pct": -32.5,
+  "message": "지난주보다 32.5% 줄였어요!"
+}
+```
+**목적**: 지난주·이번주 사용 시간 비교 및 코멘트 생성 (ADR-011)
+
+---
+
 ### 4.2 향후 확장 필요 엔드포인트
 
-| 기능 | 메서드 | 경로 | 상태 |
-|------|--------|------|------|
-| 로그인 | POST | `/auth/login` | 필수 |
-| 로그아웃 | POST | `/auth/logout` | 필수 |
-| 프로필 조회 | GET | `/profiles/{user_id}` | 필수 |
-| 프로필 수정 | PUT | `/profiles/{user_id}` | 필수 |
-| 반려동물 목록 | GET | `/pets?user_id={user_id}` | 필수 |
-| 반려동물 생성 | POST | `/pets` | 필수 |
-| 반려동물 수정 | PUT | `/pets/{pet_id}` | 필수 |
-| 반려동물 삭제 | DELETE | `/pets/{pet_id}` | 선택 |
-| 사용 로그 기록 | POST | `/usage-logs` | 필수 |
-| 사용 로그 조회 | GET | `/usage-logs?user_id={user_id}&date={date}` | 필수 |
-| 미션 조회 | GET | `/missions?user_id={user_id}&type={daily\|weekly}` | 필수 |
-| 미션 완료 | PUT | `/missions/{mission_id}/complete` | 필수 |
-| 코인 조회 | GET | `/coins/{user_id}` | 필수 |
-| 코인 거래 내역 | GET | `/coins/{user_id}/history` | 필수 |
-| 상점 아이템 목록 | GET | `/items` | 필수 |
-| 아이템 상세 | GET | `/items/{item_id}` | 필수 |
-| 아이템 구매 | POST | `/items/{item_id}/purchase` | 필수 |
-| 주간 리포트 | GET | `/reports/{user_id}?week={YYYYWW}` | 필수 |
-| 알림 설정 | PUT | `/notification-settings/{user_id}` | 선택 |
+ADR-002(FastAPI 범위를 "미션 추천·주간 리포트 전용"으로 좁힘)로 프로필·반려동물·사용 로그·미션·코인·상점 CRUD는 FastAPI를 거치지 않는다 — 클라이언트가 Supabase를 직접 호출하고, RLS가 본인 데이터만 접근하도록 격리한다. 로그인·로그아웃도 마찬가지로 클라이언트가 Supabase Auth SDK를 직접 쓴다. 이 문서가 한때 이 전부를 FastAPI "필수" 엔드포인트로 나열했던 건 ADR-002 결정 이전에 쓰인 채로 갱신이 안 된 것이었다.
+
+남은 것은 하나뿐이다:
+
+| 기능 | 상태 |
+|------|------|
+| 미션 알림 발송 (FR-057, P0) | 발송 주체 미정 — `generate_daily_missions()`(ADR-005)가 매일 새벽 미션을 만들지만, 실제로 푸시 알림을 보내는 코드는 아직 없다. FastAPI 엔드포인트로 할지 Edge Function/pg_cron으로 할지 별도 설계 필요. |
 
 ### 4.3 API 응답 형식
 
