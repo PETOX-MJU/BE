@@ -131,7 +131,9 @@ def weekly_report(
         message = "지난주 사용 기록이 없어요. 이번주부터 시작해봐요!"
     else:
         change_pct = round((this_week - last_week) / last_week * 100, 1)
-        if change_pct <= 0:
+        if change_pct == 0:
+            message = "지난주랑 똑같아요. 변화를 줘볼까요?"
+        elif change_pct < 0:
             message = f"지난주보다 {abs(change_pct)}% 줄였어요!"
         else:
             message = f"지난주보다 {change_pct}% 늘었어요. 다음주엔 목표를 다시 세워봐요."

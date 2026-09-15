@@ -90,3 +90,30 @@ def test_weekly_report_with_no_data_returns_empty(conn, user):
     as_admin(conn)
 
     assert totals == {}
+
+
+def test_weekly_report_seven_days_ago_counts_as_this_week(conn, user):
+    """경계값: usage_date < current_date - 7 이므로 정확히 7일 전은 '이번주'에 들어간다."""
+    app_id = _app_id(conn)
+    _insert_usage(conn, user, app_id, 7, 30)
+    conn.commit()
+
+    as_user(conn, user)
+    totals = _call_weekly_report(conn)
+    as_admin(conn)
+
+    assert totals.get("이번주", 0) == 30
+    assert "지난주" not in totals or totals["지난주"] == 0
+
+
+def test_weekly_report_without_session_returns_no_rows(conn, user):
+    """auth.uid()가 NULL이면(인증 안 된 호출) user_id = auth.uid() 조건이 항상
+    거짓이라 아무 행도 안 나온다 — 에러도, 남의 데이터 노출도 아니라 빈 결과."""
+    app_id = _app_id(conn)
+    _insert_usage(conn, user, app_id, 1, 40)
+    conn.commit()
+
+    as_admin(conn)  # role 리셋 + jwt.claims NULL -> auth.uid() = NULL
+    totals = _call_weekly_report(conn)
+
+    assert totals == {}

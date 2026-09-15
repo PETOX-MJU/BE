@@ -37,7 +37,7 @@ def test_usage_decreased_reports_negative_change_and_message():
     assert body["last_week_minutes"] == 385
     assert body["this_week_minutes"] == 260
     assert body["change_pct"] == -32.5
-    assert "줄였어요" in body["message"]
+    assert body["message"] == "지난주보다 32.5% 줄였어요!"
 
 
 def test_usage_increased_reports_positive_change_and_message():
@@ -50,7 +50,22 @@ def test_usage_increased_reports_positive_change_and_message():
     resp = client.get("/reports/weekly")
     body = resp.json()
     assert body["change_pct"] == 50.0
-    assert "늘었어요" in body["message"]
+    assert body["message"] == "지난주보다 50.0% 늘었어요. 다음주엔 목표를 다시 세워봐요."
+
+
+def test_usage_unchanged_reports_zero_change_and_neutral_message():
+    _set_rows(
+        [
+            {"week": "지난주", "total_minutes": 100},
+            {"week": "이번주", "total_minutes": 100},
+        ]
+    )
+    resp = client.get("/reports/weekly")
+    body = resp.json()
+    assert body["change_pct"] == 0
+    assert "똑같아요" in body["message"]
+    assert "줄였어요" not in body["message"]
+    assert "늘었어요" not in body["message"]
 
 
 def test_no_last_week_data_does_not_divide_by_zero():
