@@ -26,6 +26,7 @@ as $$
   left join notification_settings ns on ns.user_id = p.id
   where coalesce(ns.mission_alert, true)
     and p.fcm_token is not null
+    and p.fcm_token <> ''
 $$;
 
 -- authenticated에게 주면 다른 유저의 fcm_token을 노출하는 IDOR가 된다.

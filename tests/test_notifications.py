@@ -44,6 +44,12 @@ def test_no_fcm_token_excludes_user(conn, user, user_mission):
     assert user not in _notified(conn)
 
 
+def test_empty_fcm_token_excludes_user(conn, user, user_mission):
+    """빈 문자열은 is not null을 통과하므로 별도로 걸러야 한다(리뷰에서 지적)."""
+    _set_token(conn, user, "")
+    assert user not in _notified(conn)
+
+
 def test_no_mission_today_excludes_user(conn, user):
     """오늘자 daily 미션이 없으면(user_mission 픽스처 미사용) 대상에서 빠진다."""
     _set_token(conn, user, "token-1")
