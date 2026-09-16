@@ -384,6 +384,12 @@ deno_version = 2
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
 
+# ADR-18(FR-057): pg_cron이 secret key(apikey 헤더)로 호출한다 — JWT가 아니므로
+# 플랫폼의 verify_jwt 게이트를 끄고, 함수 코드 안에서 auth: 'secret'으로 직접 검증한다.
+[functions.send-mission-notifications]
+enabled = true
+verify_jwt = false
+
 [analytics]
 enabled = true
 port = 54327
