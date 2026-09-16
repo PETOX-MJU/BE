@@ -232,11 +232,7 @@ Authorization: Bearer <token>
 
 ADR-002(FastAPI 범위를 "미션 추천·주간 리포트 전용"으로 좁힘)로 프로필·반려동물·사용 로그·미션·코인·상점 CRUD는 FastAPI를 거치지 않는다 — 클라이언트가 Supabase를 직접 호출하고, RLS가 본인 데이터만 접근하도록 격리한다. 로그인·로그아웃도 마찬가지로 클라이언트가 Supabase Auth SDK를 직접 쓴다. 이 문서가 한때 이 전부를 FastAPI "필수" 엔드포인트로 나열했던 건 ADR-002 결정 이전에 쓰인 채로 갱신이 안 된 것이었다.
 
-남은 것은 하나뿐이다:
-
-| 기능 | 상태 |
-|------|------|
-| 미션 알림 발송 (FR-057, P0) | 발송 주체 미정 — `generate_daily_missions()`(ADR-005)가 매일 새벽 미션을 만들지만, 실제로 푸시 알림을 보내는 코드는 아직 없다. FastAPI 엔드포인트로 할지 Edge Function/pg_cron으로 할지 별도 설계 필요. |
+미션 알림 발송(FR-057, P0)만 남아 있었는데, ADR-18에 따라 FastAPI가 아니라 Supabase Edge Function(`supabase/functions/send-mission-notifications`)으로 구현됐다 — `generate_daily_missions()`(06:00)가 그날 미션을 만든 뒤 Supabase Cron Jobs가 06:05에 이 함수를 호출해 FCM 발송을 대신한다. FastAPI를 거치지 않으므로 이 표에 남길 FastAPI 엔드포인트 확장 항목은 이제 없다.
 
 ### 4.3 API 응답 형식
 
