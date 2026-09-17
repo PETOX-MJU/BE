@@ -221,10 +221,18 @@ Authorization: Bearer <token>
   "last_week_minutes": 385,
   "this_week_minutes": 260,
   "change_pct": -32.5,
-  "message": "지난주보다 32.5% 줄였어요!"
+  "message": "지난주보다 32.5% 줄였어요!",
+  "daily": [
+    { "date": "2026-09-10", "minutes": 42 },
+    { "date": "2026-09-11", "minutes": 0 }
+  ],
+  "by_app": [
+    { "app_name": "틱톡", "minutes": 120 },
+    { "app_name": "유튜브 쇼츠", "minutes": 60 }
+  ]
 }
 ```
-**목적**: 지난주·이번주 사용 시간 비교 및 코멘트 생성 (ADR-011)
+**목적**: 지난주·이번주 사용 시간 비교 및 코멘트 생성, 일별·앱별 집계(대시보드 그래프용) (ADR-011, 이슈 #16)
 
 ---
 

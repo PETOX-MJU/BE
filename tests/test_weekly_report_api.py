@@ -8,7 +8,13 @@ tests/test_weekly_report.py가 로컬 Supabase로 따로 검증한다.
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app, get_current_user_id, get_weekly_report_rows
+from app.main import (
+    app,
+    get_current_user_id,
+    get_weekly_report_by_app_rows,
+    get_weekly_report_daily_rows,
+    get_weekly_report_rows,
+)
 
 client = TestClient(app)
 
@@ -16,6 +22,10 @@ client = TestClient(app)
 @pytest.fixture(autouse=True)
 def _fake_login():
     app.dependency_overrides[get_current_user_id] = lambda: "test-user-id"
+    # 이 파일은 지난주/이번주 비교%·문구 로직만 본다 — daily/by_app은 기본
+    # 빈 리스트로 깔아두고, 그 필드 자체를 보는 테스트만 따로 채운다.
+    app.dependency_overrides[get_weekly_report_daily_rows] = lambda: []
+    app.dependency_overrides[get_weekly_report_by_app_rows] = lambda: []
     yield
     app.dependency_overrides.clear()
 
@@ -89,3 +99,34 @@ def test_without_auth_is_rejected():
     app.dependency_overrides.clear()  # get_current_user_id override 제거 -> 실제 검증 태움
     resp = client.get("/reports/weekly")
     assert resp.status_code == 401
+
+
+def test_daily_rows_are_passed_through_as_date_minutes_pairs():
+    """이슈 #16: 일별 그래프용 데이터가 응답에 그대로 실리는지 본다.
+
+    RPC 자체(7일 전부 채워지는지, 남의 데이터 안 섞이는지)는
+    tests/test_weekly_report.py가 로컬 Supabase로 따로 검증한다.
+    """
+    _set_rows([])
+    app.dependency_overrides[get_weekly_report_daily_rows] = lambda: [
+        {"usage_date": "2026-09-10", "total_minutes": 42},
+        {"usage_date": "2026-09-11", "total_minutes": 0},
+    ]
+    resp = client.get("/reports/weekly")
+    assert resp.json()["daily"] == [
+        {"date": "2026-09-10", "minutes": 42},
+        {"date": "2026-09-11", "minutes": 0},
+    ]
+
+
+def test_by_app_rows_are_passed_through_as_app_minutes_pairs():
+    _set_rows([])
+    app.dependency_overrides[get_weekly_report_by_app_rows] = lambda: [
+        {"app_name": "틱톡", "total_minutes": 120},
+        {"app_name": "유튜브 쇼츠", "total_minutes": 60},
+    ]
+    resp = client.get("/reports/weekly")
+    assert resp.json()["by_app"] == [
+        {"app_name": "틱톡", "minutes": 120},
+        {"app_name": "유튜브 쇼츠", "minutes": 60},
+    ]
