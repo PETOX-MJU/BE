@@ -150,7 +150,7 @@ def test_concurrent_buys_must_not_overdraw(conn, user, item):
     assert final == 40, f"한 건만 성공해 40이어야 하는데 {final}이다. (예외: {errors})"
 
 
-def test_concurrent_mission_completes_pay_once(conn, user, user_mission):
+def test_concurrent_mission_completes_pay_once(conn, user, finished_mission):
     """같은 미션을 동시에 두 번 완료해도 보상은 한 번만 지급돼야 한다.
 
     complete_mission은 상태를 select로 읽고 update한다. update는 행 잠금이
@@ -164,7 +164,7 @@ def test_concurrent_mission_completes_pay_once(conn, user, user_mission):
     errors = run_concurrently(
         2,
         lambda cur: cur.execute(
-            "select complete_mission(%s, %s)", (user_mission, str(uuid.uuid4()))
+            "select complete_mission(%s, %s)", (finished_mission, str(uuid.uuid4()))
         ),
         user,
     )
