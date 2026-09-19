@@ -117,3 +117,92 @@ def test_weekly_report_without_session_returns_no_rows(conn, user):
     totals = _call_weekly_report(conn)
 
     assert totals == {}
+
+
+# --- 이슈 #16: weekly_report_daily() / weekly_report_by_app() ---
+
+
+def _call_weekly_report_daily(conn):
+    cur = conn.cursor()
+    cur.execute("select usage_date, total_minutes from weekly_report_daily()")
+    rows = cur.fetchall()
+    cur.close()
+    return {str(d): m for d, m in rows}
+
+
+def _call_weekly_report_by_app(conn):
+    cur = conn.cursor()
+    cur.execute("select app_name, total_minutes from weekly_report_by_app()")
+    rows = cur.fetchall()
+    cur.close()
+    return dict(rows)
+
+
+def test_weekly_report_daily_fills_all_seven_days_including_zero(conn, user):
+    """이번주(days_ago 1~7) 전부 7행이 나와야 그래프가 빈 날 없이 그려진다."""
+    app_id = _app_id(conn)
+    _insert_usage(conn, user, app_id, 1, 40)
+    _insert_usage(conn, user, app_id, 7, 15)
+    conn.commit()
+
+    as_user(conn, user)
+    daily = _call_weekly_report_daily(conn)
+    as_admin(conn)
+
+    assert len(daily) == 7
+    assert sum(daily.values()) == 55
+
+
+def test_weekly_report_daily_excludes_today_and_last_week(conn, user):
+    app_id = _app_id(conn)
+    _insert_usage(conn, user, app_id, 0, 999)  # 오늘 — 제외돼야 함
+    _insert_usage(conn, user, app_id, 8, 999)  # 지난주 — 제외돼야 함
+    conn.commit()
+
+    as_user(conn, user)
+    daily = _call_weekly_report_daily(conn)
+    as_admin(conn)
+
+    assert sum(daily.values()) == 0
+
+
+def test_weekly_report_daily_does_not_leak_other_users_data(conn, user, other_user):
+    app_id = _app_id(conn)
+    _insert_usage(conn, other_user, app_id, 1, 500)
+    conn.commit()
+
+    as_user(conn, user)
+    daily = _call_weekly_report_daily(conn)
+    as_admin(conn)
+
+    assert sum(daily.values()) == 0
+
+
+def test_weekly_report_by_app_groups_and_excludes_unused_apps(conn, user):
+    cur = conn.cursor()
+    cur.execute("select id, display_name from detected_apps order by display_name limit 2")
+    (app_a, name_a), (app_b, name_b) = cur.fetchall()
+
+    _insert_usage(conn, user, app_a, 1, 30)
+    _insert_usage(conn, user, app_a, 2, 20)  # 같은 앱, 합산돼야 함
+    _insert_usage(conn, user, app_b, 8, 999)  # 지난주 — 제외돼야 함
+    conn.commit()
+
+    as_user(conn, user)
+    by_app = _call_weekly_report_by_app(conn)
+    as_admin(conn)
+
+    assert by_app.get(name_a) == 50
+    assert name_b not in by_app, "지난주에만 쓴 앱은 이번주 비중에 안 잡혀야 한다"
+
+
+def test_weekly_report_by_app_does_not_leak_other_users_data(conn, user, other_user):
+    app_id = _app_id(conn)
+    _insert_usage(conn, other_user, app_id, 1, 500)
+    conn.commit()
+
+    as_user(conn, user)
+    by_app = _call_weekly_report_by_app(conn)
+    as_admin(conn)
+
+    assert by_app == {}

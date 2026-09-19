@@ -85,17 +85,17 @@ def me(user_id: str = Depends(get_current_user_id)):
     return {"user_id": user_id}
 
 
-def call_weekly_report_rpc(access_token: str) -> list[dict]:
-    """weekly_report() RPC를 호출자 본인의 JWT로 호출한다.
+def _call_report_rpc(rpc_name: str, access_token: str) -> list[dict]:
+    """리포트 계열 RPC를 호출자 본인의 JWT로 호출한다.
 
     ADR-011: 전역 supabase 클라이언트(anon key, 로그인 세션 없음)를 그대로 쓰면
     Postgres에서 auth.uid()가 NULL이 돼서 0행만 나온다. 이 유저로 인증된
-    요청이어야 weekly_report()의 auth.uid() 필터가 본인 데이터를 잡는다.
-    전역 클라이언트를 mutate하지 않는 이유는 동시 요청 간 세션이 서로
-    덮어써지는 걸 막기 위해서다 — 요청마다 별도 HTTP 호출로 격리한다.
+    요청이어야 각 RPC의 auth.uid() 필터가 본인 데이터를 잡는다. 전역
+    클라이언트를 mutate하지 않는 이유는 동시 요청 간 세션이 서로 덮어써지는
+    걸 막기 위해서다 — 요청마다 별도 HTTP 호출로 격리한다.
     """
     resp = httpx.post(
-        f"{os.environ['SUPABASE_URL']}/rest/v1/rpc/weekly_report",
+        f"{os.environ['SUPABASE_URL']}/rest/v1/rpc/{rpc_name}",
         headers={
             "apikey": os.environ["SUPABASE_KEY"],
             "Authorization": f"Bearer {access_token}",
@@ -105,6 +105,18 @@ def call_weekly_report_rpc(access_token: str) -> list[dict]:
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def call_weekly_report_rpc(access_token: str) -> list[dict]:
+    return _call_report_rpc("weekly_report", access_token)
+
+
+def call_weekly_report_daily_rpc(access_token: str) -> list[dict]:
+    return _call_report_rpc("weekly_report_daily", access_token)
+
+
+def call_weekly_report_by_app_rpc(access_token: str) -> list[dict]:
+    return _call_report_rpc("weekly_report_by_app", access_token)
 
 
 def get_weekly_report_rows(
@@ -117,10 +129,30 @@ def get_weekly_report_rows(
         raise HTTPException(status_code=502, detail=f"report query failed: {e}")
 
 
+def get_weekly_report_daily_rows(
+    creds: HTTPAuthorizationCredentials = Depends(security),
+) -> list[dict]:
+    try:
+        return call_weekly_report_daily_rpc(creds.credentials)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"daily report query failed: {e}")
+
+
+def get_weekly_report_by_app_rows(
+    creds: HTTPAuthorizationCredentials = Depends(security),
+) -> list[dict]:
+    try:
+        return call_weekly_report_by_app_rpc(creds.credentials)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"by-app report query failed: {e}")
+
+
 @app.get("/reports/weekly")
 def weekly_report(
     user_id: str = Depends(get_current_user_id),
     rows: list[dict] = Depends(get_weekly_report_rows),
+    daily_rows: list[dict] = Depends(get_weekly_report_daily_rows),
+    by_app_rows: list[dict] = Depends(get_weekly_report_by_app_rows),
 ):
     totals = {row["week"]: row["total_minutes"] for row in rows}
     last_week = totals.get("지난주", 0)
@@ -143,4 +175,12 @@ def weekly_report(
         "this_week_minutes": this_week,
         "change_pct": change_pct,
         "message": message,
+        "daily": [
+            {"date": row["usage_date"], "minutes": row["total_minutes"]}
+            for row in daily_rows
+        ],
+        "by_app": [
+            {"app_name": row["app_name"], "minutes": row["total_minutes"]}
+            for row in by_app_rows
+        ],
     }
