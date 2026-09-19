@@ -6,6 +6,7 @@ app.dependency_overrides로 갈아끼운다 — 이 파일은 SQL이 돌려준 �
 tests/test_weekly_report.py가 로컬 Supabase로 따로 검증한다.
 """
 import pytest
+from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient
 
 from app.main import (
@@ -109,13 +110,13 @@ def test_daily_rows_are_passed_through_as_date_minutes_pairs():
     """
     _set_rows([])
     app.dependency_overrides[get_weekly_report_daily_rows] = lambda: [
-        {"usage_date": "2026-09-10", "total_minutes": 42},
-        {"usage_date": "2026-09-11", "total_minutes": 0},
+        {"week": "이번주", "usage_date": "2026-09-14", "total_minutes": 42},
+        {"week": "이번주", "usage_date": "2026-09-19", "total_minutes": None},
     ]
     resp = client.get("/reports/weekly")
     assert resp.json()["daily"] == [
-        {"date": "2026-09-10", "minutes": 42},
-        {"date": "2026-09-11", "minutes": 0},
+        {"week": "이번주", "date": "2026-09-14", "minutes": 42},
+        {"week": "이번주", "date": "2026-09-19", "minutes": None},  # 아직 안 온 날은 null
     ]
 
 
@@ -130,3 +131,34 @@ def test_by_app_rows_are_passed_through_as_app_minutes_pairs():
         {"app_name": "틱톡", "minutes": 120},
         {"app_name": "유튜브 쇼츠", "minutes": 60},
     ]
+
+
+def test_week_just_started_says_so_instead_of_claiming_a_drop():
+    """월요일엔 비교할 끝난 날이 없다 — 0/지난주로 '100% 줄였어요'가 나오면 안 된다."""
+    _set_rows(
+        [
+            {"week": "지난주", "total_minutes": 0, "days_compared": 0},
+            {"week": "이번주", "total_minutes": 0, "days_compared": 0},
+        ]
+    )
+    body = client.get("/reports/weekly").json()
+    assert body["days_compared"] == 0
+    assert body["change_pct"] is None
+    assert "막 시작" in body["message"]
+
+
+def test_week_offset_is_forwarded_to_the_rpc(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        "app.main.call_weekly_report_rpc",
+        lambda token, offset: seen.update(token=token, offset=offset) or [],
+    )
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="tok")
+    get_weekly_report_rows(creds=creds, week_offset=-1)
+    assert seen == {"token": "tok", "offset": -1}
+
+
+def test_future_week_offset_is_rejected():
+    """미래 주는 데이터가 있을 수 없다 — 양수는 422로 거른다."""
+    resp = client.get("/reports/weekly?week_offset=1", headers={"Authorization": "Bearer x"})
+    assert resp.status_code == 422

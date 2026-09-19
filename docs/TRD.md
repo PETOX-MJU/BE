@@ -212,19 +212,23 @@ Authorization: Bearer <token>
 
 #### 4.1.6 주간 리포트
 ```http
-GET /reports/weekly
+GET /reports/weekly?week_offset=0
 Authorization: Bearer <token>
 ```
+`week_offset`: 0=이번 주(기본), -1=지난 주, -2=... (0 이하만 허용, 양수는 422). "주"는 KST 달력 주(월~일)다(ADR-23, ADR-24).
+
 **응답**:
 ```json
 {
   "last_week_minutes": 385,
   "this_week_minutes": 260,
   "change_pct": -32.5,
+  "days_compared": 7,
   "message": "지난주보다 32.5% 줄였어요!",
   "daily": [
-    { "date": "2026-09-10", "minutes": 42 },
-    { "date": "2026-09-11", "minutes": 0 }
+    { "week": "지난주", "date": "2026-09-07", "minutes": 42 },
+    { "week": "이번주", "date": "2026-09-14", "minutes": 0 },
+    { "week": "이번주", "date": "2026-09-19", "minutes": null }
   ],
   "by_app": [
     { "app_name": "틱톡", "minutes": 120 },
@@ -232,6 +236,10 @@ Authorization: Bearer <token>
   ]
 }
 ```
+- `daily`는 선택한 주(`이번주`)와 그 전 주(`지난주`) 14일이 월요일부터 전부 나온다. 아직 끝나지 않은 날(오늘 이후)은 0이 아니라 `null`이다.
+- 진행 중인 주는 지난주와 **같은 일수(`days_compared`)만** 비교한다. 오늘은 집계에서 빠진다. `days_compared`가 0이면(월요일) 비교하지 않고 `change_pct`는 `null`이다.
+- `by_app`은 선택한 주에서 끝난 날만 합산한다.
+
 **목적**: 지난주·이번주 사용 시간 비교 및 코멘트 생성, 일별·앱별 집계(대시보드 그래프용) (ADR-011, 이슈 #16)
 
 ---
