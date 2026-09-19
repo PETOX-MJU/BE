@@ -17,7 +17,10 @@ export default {
       ctx.userClaims!.id,
     );
     if (error) {
-      return Response.json({ error: error.message }, { status: 500 });
+      console.error("delete-account failed:", error.message);
+      return Response.json({ error: "account deletion failed" }, {
+        status: 500,
+      });
     }
     return Response.json({ ok: true });
   }),
