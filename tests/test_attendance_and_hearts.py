@@ -8,7 +8,7 @@ import uuid
 import psycopg2
 import pytest
 
-from tests.conftest import as_admin, as_user, balance, requires_db
+from tests.conftest import as_admin, as_user, balance, requires_db, run_concurrently
 
 pytestmark = requires_db
 
@@ -176,6 +176,20 @@ def test_client_cannot_read_others_interactions_or_write_any(conn, user, other_u
             )
     finally:
         as_admin(conn)
+
+
+def test_concurrent_taps_respect_the_cap(conn, user):
+    """하트는 affection을 읽고 계산해서 쓴다 — 동시 탭이 상한을 넘기면 안 된다.
+
+    잠금 키를 코인(auth.uid())에서 펫 id로 바꿨으므로, 경합 대상인 그 펫만
+    직렬화되는지 확인한다. 잠금이 아예 없으면 두 호출이 둘 다 affection=98을
+    읽고 각자 올려서 100을 넘긴다.
+    """
+    pet = _pet(conn, user, affection=98)
+
+    run_concurrently(2, lambda cur: cur.execute("select pet_interact(%s)", (pet,)), user)
+
+    assert _affection(conn, pet) == 100, "상한을 넘으면 안 된다"
 
 
 # ── 실행 권한 ────────────────────────────────────────────────────────────
