@@ -1,9 +1,7 @@
-fastapi
-uvicorn[standard]
-sqlalchemy
-psycopg2-binary
-python-dotenv
-supabase
-pydantic[email]
-pyjwt[crypto]
-httpx
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+python-dotenv==1.2.3
+supabase==2.31.0
+pydantic[email]==2.13.5
+pyjwt[crypto]==2.14.0
+httpx==0.28.1

@@ -112,7 +112,7 @@
 | **UI/UX** | React Native Gesture Handler, Reanimated | 오버레이 애니메이션, 햅틱 |
 | **이미지 처리** | ML Kit Subject Segmentation | 온디바이스, 외부 AI API 미사용 |
 | **백엔드** | FastAPI | Python 3.10+, 비동기 지원 |
-| **ORM** | SQLAlchemy 2.0+ | PostgreSQL 드라이버 (psycopg) |
+| **ORM** | 사용 안 함 | FastAPI는 DB에 직접 붙지 않고 Supabase RPC(PostgREST)만 호출한다 |
 | **인증** | Supabase Auth | JWT 토큰 기반 |
 | **데이터베이스** | PostgreSQL 15+ (Supabase) | 11개 테이블, 사용자 격리 |
 | **API 명세** | OpenAPI 3.1 (FastAPI 자동 생성) | /docs 경로에서 Swagger UI 제공 |
@@ -138,34 +138,15 @@ GET /health
 
 ---
 
-#### 4.1.2 데이터베이스 헬스 체크
-```http
-GET /db-health
-```
-**응답**:
-```json
-{"db": "ok"}
-```
-**목적**: DB 연결 상태 확인
+#### 4.1.2 (제거됨) 데이터베이스 헬스 체크
+`GET /db-health`는 제거했다. FastAPI가 `DATABASE_URL`(DB 비밀번호)을 들고 있어야 했던 유일한 이유였고,
+서드파티 호스트에 그 값을 두지 않기 위해서다. 서버 상태는 `/health`로 본다.
 
 ---
 
-#### 4.1.3 아이템 조회 (임시 구현)
-```http
-GET /items/{item_id}?q={query}
-```
-**요청 매개변수**:
-- `item_id` (path, int): 아이템 ID
-- `q` (query, str, optional): 추가 쿼리
-
-**응답**:
-```json
-{
-  "item_id": 1,
-  "q": "example"
-}
-```
-**목적**: 상점 아이템 조회 (현재는 임시 응답)
+#### 4.1.3 (제거됨) 아이템 조회
+`GET /items/{item_id}`는 제거했다. 값을 그대로 돌려주는 임시 응답이라 실제 기능이 없었다.
+상점은 Supabase의 `items` 테이블과 `buy_item` RPC로 처리한다.
 
 ---
 
@@ -475,7 +456,6 @@ jobs:
 ### 8.4 환경 변수 (.env)
 
 ```env
-DATABASE_URL=postgresql://user:pass@host:5432/petox
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_KEY=your-anon-key
 SECRET_KEY=your-secret-for-jwt  # 선택
