@@ -6,11 +6,16 @@
 -- p_week_offset: 0=이번 주, -1=지난 주. 오늘(진행 중인 날)은 아직 덜 쌓였으므로
 -- 집계에서 뺀다 — ADR-011부터 이어진 규칙.
 --
+-- 미래 주는 데이터가 있을 수 없으므로 양수 offset은 least(p_week_offset, 0)으로
+-- 이번 주에 붙인다. FastAPI의 Query(le=0) 가드는 /reports/weekly 경로에만 걸리는데,
+-- 이 함수들은 PostgREST로도 직접 호출되므로 경로와 무관하게 막아야 한다.
+--
 -- 반환형과 인자가 바뀌어서 create or replace로는 못 바꾼다 — 기존 함수를 지우고 만든다.
+-- if exists: 부분 적용·롤백 상태에서 마이그레이션 전체가 실패하지 않게 한다.
 
-drop function weekly_report();
-drop function weekly_report_daily();
-drop function weekly_report_by_app();
+drop function if exists weekly_report();
+drop function if exists weekly_report_daily();
+drop function if exists weekly_report_by_app();
 
 -- 합계: 선택한 주와 그 전 주를 "같은 일수"만큼만 비교한다. 진행 중인 주를 지난주
 -- 7일 전체와 비교하면 월요일마다 "100% 줄였어요"가 나오기 때문이다. 끝난 주는 7일.
@@ -21,7 +26,7 @@ stable
 as $$
   with b as (
     select (now() at time zone 'Asia/Seoul')::date as today,
-           date_trunc('week', now() at time zone 'Asia/Seoul')::date + p_week_offset * 7 as week_start
+           date_trunc('week', now() at time zone 'Asia/Seoul')::date + least(p_week_offset, 0) * 7 as week_start
   ), n as (
     select week_start, greatest(0, least(7, today - week_start)) as days from b
   )
@@ -47,7 +52,7 @@ stable
 as $$
   with b as (
     select (now() at time zone 'Asia/Seoul')::date as today,
-           date_trunc('week', now() at time zone 'Asia/Seoul')::date + p_week_offset * 7 as week_start
+           date_trunc('week', now() at time zone 'Asia/Seoul')::date + least(p_week_offset, 0) * 7 as week_start
   )
   select case when g >= 7 then '이번주' else '지난주' end,
          b.week_start - 7 + g,
@@ -70,7 +75,7 @@ stable
 as $$
   with b as (
     select (now() at time zone 'Asia/Seoul')::date as today,
-           date_trunc('week', now() at time zone 'Asia/Seoul')::date + p_week_offset * 7 as week_start
+           date_trunc('week', now() at time zone 'Asia/Seoul')::date + least(p_week_offset, 0) * 7 as week_start
   )
   select da.display_name, sum(du.minutes)::int
   from b

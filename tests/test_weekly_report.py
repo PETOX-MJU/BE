@@ -209,12 +209,33 @@ def test_daily_marks_unfinished_days_null_not_zero(conn, user):
 
     as_user(conn, user)
     rows = _call_weekly_report_daily(conn, 0)
-    future = _call_weekly_report_daily(conn, 1)
     as_admin(conn)
 
     for _, d, m in rows:
         assert (m is None) == (d >= today), f"{d}: {m}"
-    assert all(m is None for w, _, m in future if w == "이번주")
+
+
+def test_positive_offset_is_clamped_to_this_week(conn, user):
+    """미래 주는 데이터가 있을 수 없다 — SQL이 직접 호출돼도 이번 주로 붙인다.
+
+    FastAPI의 Query(le=0)는 /reports/weekly 경로에만 걸리므로, PostgREST로
+    직접 부르는 경우까지 막으려면 함수 안에서 클램프해야 한다.
+    """
+    app_id = _app_id(conn)
+    _insert_usage(conn, user, app_id, _week_start(conn, -1) + timedelta(days=1), 35)
+
+    as_user(conn, user)
+    this_week = _call_weekly_report_daily(conn, 0)
+    clamped = _call_weekly_report_daily(conn, 3)
+    totals_this, _ = _call_weekly_report(conn, 0)
+    totals_clamped, _ = _call_weekly_report(conn, 3)
+    by_app_this = _call_weekly_report_by_app(conn, 0)
+    by_app_clamped = _call_weekly_report_by_app(conn, 3)
+    as_admin(conn)
+
+    assert clamped == this_week
+    assert totals_clamped == totals_this
+    assert by_app_clamped == by_app_this
 
 
 def test_daily_does_not_leak_other_users_data(conn, user, other_user):
