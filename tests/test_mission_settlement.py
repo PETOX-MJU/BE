@@ -141,12 +141,13 @@ def _settle(conn):
 
 
 def test_settle_pays_achieved_and_fails_missed_and_ignores_today(conn, user):
+    """방금 끝난 하루(어제)를 판정한다 — 날짜가 바뀌는 시점에 도는 자동 정산이다."""
     app_id, _ = _apps(conn)[0]
     achieved = _typed_mission(
-        conn, user, metric="usage_minutes", app_id=app_id, target=30, day_offset=-2
+        conn, user, metric="usage_minutes", app_id=app_id, target=30, day_offset=-1
     )
-    missed = _typed_mission(conn, user, metric="pet_calls", target=2, day_offset=-2)
-    _pet_calls(conn, user, -2, 9)
+    missed = _typed_mission(conn, user, metric="pet_calls", target=2, day_offset=-1)
+    _pet_calls(conn, user, -1, 9)
     today = _make_mission(conn, user, 0)
 
     _settle(conn)
@@ -157,23 +158,8 @@ def test_settle_pays_achieved_and_fails_missed_and_ignores_today(conn, user):
     assert balance(conn, user) == 50, "지킨 한 건만 지급"
 
 
-def test_settle_leaves_yesterdays_mission_claimable(conn, user, finished_mission):
-    """어제 미션은 정산하지 않는다 — 오늘 하루 종일 수령할 수 있어야 한다.
-
-    유예가 없으면 수령 창이 KST 00:00~06:00 여섯 시간뿐이라 FE의 "받기" 버튼이
-    사실상 죽는다.
-    """
-    _settle(conn)
-
-    assert _status(conn, finished_mission) == "in_progress"
-    assert balance(conn, user) == 0
-
-    _claim(conn, user, finished_mission)
-    assert balance(conn, user) == 50
-
-
 def test_settle_fails_stale_missions_without_paying(conn, user):
-    """유예가 한참 지난 미션은 지급 없이 failed로 정리한다.
+    """하루가 끝난 지 이틀 넘은 미션은 지급 없이 failed로 정리한다.
 
     mission_achieved는 기록이 없으면 "지켰다"로 보는데, 오래된 미션은 그 기록이
     없는 게 정상이다. 하한이 없으면 배포 직후 첫 실행에서 그동안 쌓인 미수령
@@ -181,7 +167,7 @@ def test_settle_fails_stale_missions_without_paying(conn, user):
     """
     stale = [
         _typed_mission(conn, user, metric="usage_minutes", target=30, day_offset=d)
-        for d in (-3, -10, -40)
+        for d in (-2, -10, -40)
     ]
 
     _settle(conn)
@@ -190,38 +176,38 @@ def test_settle_fails_stale_missions_without_paying(conn, user):
     assert balance(conn, user) == 0, "오래된 미션은 한 푼도 지급하지 않는다"
 
 
-def test_settle_twice_does_not_pay_twice(conn, user):
-    _typed_mission(conn, user, metric="usage_minutes", target=30, day_offset=-2)
+def test_settle_twice_does_not_pay_twice(conn, user, finished_mission):
     _settle(conn)
     _settle(conn)
     assert balance(conn, user) == 50
 
 
-def test_settle_does_not_pay_a_mission_that_was_already_claimed(conn, user):
-    um = _typed_mission(conn, user, metric="usage_minutes", target=30, day_offset=-2)
-    _claim(conn, user, um)
+def test_settle_does_not_pay_a_mission_that_was_already_claimed(conn, user, finished_mission):
+    _claim(conn, user, finished_mission)
     _settle(conn)
     assert balance(conn, user) == 50, "수령 50 + 정산 0이어야 한다"
 
 
-def test_claiming_an_already_settled_mission_is_a_no_op(conn, user):
+def test_claiming_an_already_settled_mission_is_a_no_op(conn, user, finished_mission):
     """정산이 먼저 지급한 뒤 FE가 "받기"를 눌러도 에러가 아니라 조용히 끝나야 한다.
 
-    코인은 이미 들어가 있는데 예외가 나면 "성공했는데 에러 화면"이 된다.
+    날짜가 바뀌는 시점에 정산하면 수령 가능한 시간이 사실상 없다(수령 조건인
+    valid_date < 오늘이 참이 되는 순간이 곧 정산 시각이다). 그래서 "받기"는 거의
+    항상 이 경로로 들어온다. 코인은 이미 들어가 있는데 예외가 나면 "성공했는데
+    에러 화면"이 된다.
     """
-    um = _typed_mission(conn, user, metric="usage_minutes", target=30, day_offset=-2)
     _settle(conn)
-    assert _status(conn, um) == "completed"
+    assert _status(conn, finished_mission) == "completed"
     assert balance(conn, user) == 50
 
-    _claim(conn, user, um)  # 예외가 나면 안 된다
+    _claim(conn, user, finished_mission)  # 예외가 나면 안 된다
 
     assert balance(conn, user) == 50, "두 번 지급되면 안 된다"
 
 
 def test_claiming_a_failed_mission_still_raises(conn, user):
-    um = _typed_mission(conn, user, metric="pet_calls", target=2, day_offset=-2)
-    _pet_calls(conn, user, -2, 9)
+    um = _typed_mission(conn, user, metric="pet_calls", target=2, day_offset=-1)
+    _pet_calls(conn, user, -1, 9)
     _settle(conn)
     assert _status(conn, um) == "failed"
 
