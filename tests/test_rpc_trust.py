@@ -8,49 +8,21 @@
 세 번째와 별개로, 서로 다른 요청이 동시에 들어올 때도 잔액이 지켜지는지는
 멱등키가 보장하지 않는다. 마지막 테스트가 그 지점을 본다.
 """
-import threading
 import uuid
 
 import psycopg2
 import pytest
 
-from tests.conftest import LOCAL_DB_URL, as_admin, as_user, balance, grant_coins, requires_db
+from tests.conftest import (
+    as_admin,
+    as_user,
+    balance,
+    grant_coins,
+    requires_db,
+    run_concurrently,
+)
 
 pytestmark = requires_db
-
-
-def run_concurrently(n: int, action, user_id: str) -> list[str]:
-    """같은 사용자로 action을 n개 스레드에서 동시에 실행하고 예외 이름을 모은다.
-
-    barrier로 출발선을 맞춰야 실제로 겹친다. 한 연결에서 두 번 부르면 트랜잭션이
-    직렬화되어 경합이 재현되지 않는다.
-    """
-    barrier = threading.Barrier(n)
-    errors: list[str] = []
-    lock = threading.Lock()
-
-    def worker():
-        c = psycopg2.connect(LOCAL_DB_URL)
-        try:
-            as_user(c, user_id)
-            cur = c.cursor()
-            cur.execute("set local statement_timeout = '10s'")
-            barrier.wait(timeout=10)
-            action(cur)
-            c.commit()
-        except Exception as e:  # noqa: BLE001 — 한쪽이 거부되는 건 정상 동작
-            with lock:
-                errors.append(type(e).__name__)
-            c.rollback()
-        finally:
-            c.close()
-
-    threads = [threading.Thread(target=worker) for _ in range(n)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=30)
-    return errors
 
 
 # ── 1. RLS: 클라이언트는 원장에 직접 쓸 수 없다 ──────────────────────────

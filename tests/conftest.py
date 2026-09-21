@@ -5,6 +5,7 @@ RPC(security definer)와 RLS는 실제 Postgres에서만 검증되므로, FastAP
 프로젝트는 절대 건드리지 않는다.
 """
 import os
+import threading
 import uuid
 
 import psycopg2
@@ -165,3 +166,37 @@ def user_mission(conn, user):
 def finished_mission(conn, user):
     """어제(KST) 끝난 진행중 미션 하나. 사용 기록이 없어 목표를 지킨 상태다."""
     yield _make_mission(conn, user, -1)
+
+
+def run_concurrently(n: int, action, user_id: str) -> list[str]:
+    """같은 사용자로 action을 n개 스레드에서 동시에 실행하고 예외 이름을 모은다.
+
+    barrier로 출발선을 맞춰야 실제로 겹친다. 한 연결에서 두 번 부르면 트랜잭션이
+    직렬화되어 경합이 재현되지 않는다.
+    """
+    barrier = threading.Barrier(n)
+    errors: list[str] = []
+    lock = threading.Lock()
+
+    def worker():
+        c = psycopg2.connect(LOCAL_DB_URL)
+        try:
+            as_user(c, user_id)
+            cur = c.cursor()
+            cur.execute("set local statement_timeout = '10s'")
+            barrier.wait(timeout=10)
+            action(cur)
+            c.commit()
+        except Exception as e:  # noqa: BLE001 — 한쪽이 거부되는 건 정상 동작
+            with lock:
+                errors.append(type(e).__name__)
+            c.rollback()
+        finally:
+            c.close()
+
+    threads = [threading.Thread(target=worker) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    return errors

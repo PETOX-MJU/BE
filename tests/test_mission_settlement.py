@@ -205,6 +205,31 @@ def test_claiming_an_already_settled_mission_is_a_no_op(conn, user, finished_mis
     assert balance(conn, user) == 50, "두 번 지급되면 안 된다"
 
 
+def test_claiming_a_weekly_mission_says_so_instead_of_not_found(conn, user):
+    """weekly 미션은 아직 판정할 수 없다 — 그 사실을 조용히 삼키지 않는다.
+
+    예전에는 select 조건에 type = 'daily'가 있어서 'mission not found'가 났다.
+    미션이 실제로 있는데 없다고 말하는 셈이라 FR-070을 넣을 때 원인을 찾기 어렵다.
+    """
+    mid, umid = str(uuid.uuid4()), str(uuid.uuid4())
+    cur = conn.cursor()
+    cur.execute(
+        "insert into missions (id, type, title, target_minutes, reward_coins, valid_date) "
+        "values (%s, 'weekly', '주간', 300, 100, "
+        "(now() at time zone 'Asia/Seoul')::date - 1)",
+        (mid,),
+    )
+    cur.execute(
+        "insert into user_missions (id, user_id, mission_id) values (%s, %s, %s)",
+        (umid, user, mid),
+    )
+    cur.close()
+
+    with pytest.raises(psycopg2.errors.RaiseException, match="only daily missions"):
+        _claim(conn, user, umid)
+    assert balance(conn, user) == 0
+
+
 def test_claiming_a_failed_mission_still_raises(conn, user):
     um = _typed_mission(conn, user, metric="pet_calls", target=2, day_offset=-1)
     _pet_calls(conn, user, -1, 9)
