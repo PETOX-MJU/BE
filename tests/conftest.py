@@ -136,20 +136,32 @@ def balance(connection, user_id: str) -> int:
     return v
 
 
-@pytest.fixture
-def user_mission(conn, user):
-    """보상 50코인짜리 진행중 미션 하나."""
+def _make_mission(connection, user_id: str, day_offset: int) -> str:
+    """보상 50코인, 30분 이내 목표의 진행중 미션. day_offset은 KST 오늘 기준(0=오늘, -1=어제)."""
     mid, umid = str(uuid.uuid4()), str(uuid.uuid4())
-    cur = conn.cursor()
+    cur = connection.cursor()
     cur.execute(
         "insert into missions (id, type, title, target_minutes, reward_coins, valid_date) "
-        "values (%s, 'daily', '테스트 미션', 30, 50, current_date)",
-        (mid,),
+        "values (%s, 'daily', '테스트 미션', 30, 50, "
+        "(now() at time zone 'Asia/Seoul')::date + %s)",
+        (mid, day_offset),
     )
     cur.execute(
         "insert into user_missions (id, user_id, mission_id, status, coins_earned) "
         "values (%s, %s, %s, 'in_progress', 0)",
-        (umid, user, mid),
+        (umid, user_id, mid),
     )
     cur.close()
-    yield umid
+    return umid
+
+
+@pytest.fixture
+def user_mission(conn, user):
+    """오늘(KST) 시작한 진행중 미션 하나."""
+    yield _make_mission(conn, user, 0)
+
+
+@pytest.fixture
+def finished_mission(conn, user):
+    """어제(KST) 끝난 진행중 미션 하나. 사용 기록이 없어 목표를 지킨 상태다."""
+    yield _make_mission(conn, user, -1)
