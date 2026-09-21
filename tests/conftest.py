@@ -137,8 +137,29 @@ def balance(connection, user_id: str) -> int:
     return v
 
 
+def sync_heartbeat(connection, user_id: str, day_offset: int = 0):
+    """그날 앱이 동기화했다는 표시로 0분짜리 daily_usage 행을 심는다.
+
+    mission_achieved가 "그날 daily_usage 행이 있는가"를 성공 판정의 전제로 쓴다
+    (20260921090000). 목표를 지켰는지와 무관하게, 수집이 돌았다는 신호가 없으면
+    실패 처리된다. 분 수를 검증하는 테스트는 이 헬퍼 대신 실제 사용량을 넣으면 된다.
+    """
+    cur = connection.cursor()
+    cur.execute(
+        "insert into daily_usage (user_id, app_id, usage_date, minutes) "
+        "select %s, id, (now() at time zone 'Asia/Seoul')::date + %s, 0 "
+        "from detected_apps order by package_name limit 1 "
+        "on conflict do nothing",
+        (user_id, day_offset),
+    )
+    cur.close()
+
+
 def _make_mission(connection, user_id: str, day_offset: int) -> str:
-    """보상 50코인, 30분 이내 목표의 진행중 미션. day_offset은 KST 오늘 기준(0=오늘, -1=어제)."""
+    """보상 50코인, 30분 이내 목표의 진행중 미션. day_offset은 KST 오늘 기준(0=오늘, -1=어제).
+
+    수집이 정상인 상태를 기본으로 두기 위해 같은 날짜의 동기화 하트비트도 함께 심는다.
+    """
     mid, umid = str(uuid.uuid4()), str(uuid.uuid4())
     cur = connection.cursor()
     cur.execute(
@@ -153,6 +174,7 @@ def _make_mission(connection, user_id: str, day_offset: int) -> str:
         (umid, user_id, mid),
     )
     cur.close()
+    sync_heartbeat(connection, user_id, day_offset)
     return umid
 
 
