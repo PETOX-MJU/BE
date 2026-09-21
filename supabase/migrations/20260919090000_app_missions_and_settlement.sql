@@ -3,7 +3,10 @@
 -- 미션의 "날짜"는 KST다. 사용시간(daily_usage.usage_date)이 기기 날짜(KST)로 쌓이므로
 -- 판정 기준일이 같아야 한다. cron도 KST 06:00(UTC 21:00)으로 옮긴다.
 
--- 펫 호출 횟수: 클라이언트가 직접 쓴다(daily_usage와 같은 신뢰 수준, ADR-003).
+-- 펫 호출 횟수. daily_usage와 달리 클라이언트가 직접 쓰지 못한다 — 이 값이 곧 미션
+-- 성공 판정(mission_achieved)이라 직접 쓰게 두면 0으로 적어 코인을 가져갈 수 있다.
+-- ADR-22가 pets.affection·profiles.pet_slot_limit에 대해 막은 것과 같은 이유다.
+-- select 정책만 두고 쓰기는 record_pet_call()만 한다(날짜도 서버의 KST로 정한다).
 create table daily_pet_calls (
   user_id uuid not null references auth.users(id) on delete cascade,
   usage_date date not null,
@@ -13,8 +16,30 @@ create table daily_pet_calls (
 
 alter table daily_pet_calls enable row level security;
 create policy "own pet calls" on daily_pet_calls for select using (user_id = auth.uid());
-create policy "own pet calls insert" on daily_pet_calls for insert with check (user_id = auth.uid());
-create policy "own pet calls update" on daily_pet_calls for update using (user_id = auth.uid());
+
+-- 펫을 한 번 불렀다고 기록하고 오늘 누적 횟수를 돌려준다. FE는 daily_pet_calls에
+-- 직접 쓰는 대신 이 RPC를 호출한다.
+create or replace function record_pet_call()
+returns int
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_calls int;
+begin
+  insert into daily_pet_calls (user_id, usage_date, calls)
+  values (auth.uid(), (now() at time zone 'Asia/Seoul')::date, 1)
+  on conflict (user_id, usage_date)
+  do update set calls = daily_pet_calls.calls + 1
+  returning calls into v_calls;
+
+  return v_calls;
+end;
+$$;
+
+revoke execute on function record_pet_call() from public, anon;
+grant execute on function record_pet_call() to authenticated;
 
 -- 미션 모델: app_id가 없으면 전체 앱 합산. target은 metric에 따라 분(target_minutes) 또는
 -- 횟수(target_count) 중 하나만 채운다.
@@ -68,6 +93,7 @@ declare
   v_reward int;
   v_mission_id uuid;
   v_valid_date date;
+  v_status text;
 begin
   -- 같은 사용자의 코인 변경을 직렬화한다 (ADR-008).
   perform pg_advisory_xact_lock(hashtextextended(auth.uid()::text, 0));
@@ -77,15 +103,26 @@ begin
     return;
   end if;
 
-  select m.reward_coins, m.id, m.valid_date into v_reward, v_mission_id, v_valid_date
+  select m.reward_coins, m.id, m.valid_date, um.status
+    into v_reward, v_mission_id, v_valid_date, v_status
   from user_missions um
   join missions m on m.id = um.mission_id
   where um.id = p_user_mission_id
     and um.user_id = auth.uid()
-    and um.status = 'in_progress'
     and m.type = 'daily';
 
-  if v_reward is null then
+  if v_status is null then
+    raise exception 'mission not found';
+  end if;
+
+  -- 자동 정산(settle_missions)이 먼저 지급한 경우다. 코인은 이미 들어가 있으므로
+  -- 여기서 예외를 내면 FE는 "성공했는데 에러"를 보게 된다. 조용히 끝낸다 —
+  -- request_id 멱등 처리와 같은 성격이다.
+  if v_status = 'completed' then
+    return;
+  end if;
+
+  if v_status <> 'in_progress' then
     raise exception 'mission not found or already completed';
   end if;
 
@@ -113,8 +150,17 @@ end;
 $$;
 
 -- 자동 정산: 하루가 끝난 미션 중 아직 in_progress인 것을 판정한다. 지켰으면 수령한 것과
--- 같은 코인을 주고, 못 지켰으면 failed(FR-067). 정산 시점을 늦추려면(유예) 아래
--- valid_date 조건에서 v_today에 유예 일수를 빼면 된다(ADR-25).
+-- 같은 코인을 주고, 못 지켰으면 failed(FR-067).
+--
+-- valid_date를 세 구간으로 나눈다.
+--   어제        건드리지 않는다 — 오늘 하루 종일 complete_mission으로 수령할 수 있다.
+--               (이 유예가 없으면 수령 창이 KST 00:00~06:00 여섯 시간뿐이라,
+--                FE의 "받기" 버튼이 사실상 죽는다.)
+--   그제        판정해서 지급 또는 failed. 유예가 끝난 시점이다.
+--   그보다 이전  지급 없이 failed. mission_achieved는 기록이 없으면 "지켰다"로 보는데,
+--               오래된 미션은 그 기록이 없는 게 정상이라 전부 성공 판정이 난다.
+--               하한이 없으면 배포 직후 첫 실행에서 그동안 쌓인 미수령 미션이
+--               한꺼번에 지급된다.
 --
 -- 코인 멱등키는 user_mission id에서 결정적으로 만든다 — 재실행돼도 unique 제약이
 -- 이중 지급을 막는다. 수령과 겹쳐도 update의 status 조건이 한쪽만 통과시킨다.
@@ -130,13 +176,22 @@ declare
 begin
   perform pg_advisory_xact_lock(hashtextextended('settle_missions', 0));
 
+  -- 유예가 지난 지 오래된 미션은 판정 근거를 믿을 수 없으므로 지급 없이 정리한다.
+  update user_missions um
+  set status = 'failed'
+  from missions m
+  where m.id = um.mission_id
+    and um.status = 'in_progress'
+    and m.type = 'daily'
+    and m.valid_date < v_today - 2;
+
   for r in
     select um.id as um_id, um.user_id, m.id as mission_id, m.reward_coins
     from user_missions um
     join missions m on m.id = um.mission_id
     where um.status = 'in_progress'
       and m.type = 'daily'
-      and m.valid_date < v_today
+      and m.valid_date = v_today - 2
   loop
     if mission_achieved(r.user_id, r.mission_id) then
       update user_missions
@@ -160,8 +215,12 @@ revoke execute on function settle_missions() from public, anon, authenticated;
 
 -- 오늘(KST)의 미션 3장: 활성 앱 중 어제 사용량 상위 2개의 앱별 미션 + 펫 호출 미션.
 -- 목표는 ADR-005 공식(어제 사용량 - 10분, 최소 15분)을 앱별로 적용하고, 펫 호출은
--- 어제 횟수 - 1에 최소 2회다. 보상은 전부 20코인. 활성 앱이 없는 유저는 앱 미션 없이
--- 펫 호출 미션만 받는다.
+-- 어제 횟수 - 1에 최소 2회다. 보상은 전부 20코인.
+--
+-- 활성 앱이 하나도 없으면 ADR-005의 전체 사용시간 미션으로 폴백한다. user_detected_apps를
+-- 채우는 경로가 BE에 없어서(FE 온보딩이 맡는다) 비어 있을 수 있는데, 폴백이 없으면
+-- 오늘 미션이 펫 호출 하나뿐이 된다. 그 미션은 기록이 없을 때 항상 성공이라 매일
+-- 코인이 공짜로 나간다.
 create or replace function generate_daily_missions()
 returns void
 language plpgsql
@@ -175,6 +234,7 @@ declare
   v_yesterday date := v_today - 1;
   v_target int;
   v_calls int;
+  v_app_count int;
   v_mission_id uuid;
 begin
   -- 배치 전체를 직렬화한다 — 겹쳐 돌면 유저별 "오늘 미션 있나" 체크가 레이스로
@@ -189,6 +249,8 @@ begin
     ) then
       continue; -- 오늘 미션 이미 있음 — 재실행 안전장치
     end if;
+
+    v_app_count := 0;
 
     for v_app in
       select da.id, da.display_name, coalesce(sum(du.minutes), 0)::int as minutes
@@ -210,7 +272,24 @@ begin
 
       insert into user_missions (user_id, mission_id, status)
       values (v_user.id, v_mission_id, 'in_progress');
+
+      v_app_count := v_app_count + 1;
     end loop;
+
+    -- 활성 앱이 없으면 전체 사용시간 미션으로 폴백한다(ADR-005의 원래 규칙).
+    if v_app_count = 0 then
+      select coalesce(sum(minutes), 0)::int into v_target
+      from daily_usage where user_id = v_user.id and usage_date = v_yesterday;
+      v_target := greatest(v_target - 10, 15);
+
+      insert into missions (type, title, target_minutes, reward_coins, valid_date, metric)
+      values ('daily', '오늘은 ' || v_target || '분 이내로 줄이기', v_target, 20,
+              v_today, 'usage_minutes')
+      returning id into v_mission_id;
+
+      insert into user_missions (user_id, mission_id, status)
+      values (v_user.id, v_mission_id, 'in_progress');
+    end if;
 
     select coalesce(calls, 0) into v_calls
     from daily_pet_calls where user_id = v_user.id and usage_date = v_yesterday;
@@ -244,13 +323,21 @@ as $$
     and p.fcm_token <> ''
 $$;
 
--- cron: 06:00 KST에 전날 미션 정산 → 새 미션 생성 순서로 한 job에서 돌리고, 알림은
--- 5분 뒤에 보낸다(원래 ADR-005·ADR-18이 의도한 시각). 알림 job의 명령은 Vault
--- 참조를 포함해서 다시 쓰지 않고 스케줄만 바꾼다. job이 없으면 아무 일도 안 한다.
+-- 모든 유저의 미션을 만드는 배치라 로그인한 사용자가 RPC로 부르면 안 된다.
+-- create or replace는 grant를 리셋하지 않아서, 최초 create 때 PUBLIC에 자동으로
+-- 부여된 execute가 그대로 남아 있었다.
+revoke execute on function generate_daily_missions() from public, anon, authenticated;
+
+-- cron: 둘 다 06:00 KST(UTC 21:00)에 돌고 알림은 5분 뒤다(원래 ADR-005·ADR-18이
+-- 의도한 시각). job을 나눈 이유는 한 명령에 두 문장을 넣으면 단순 질의 프로토콜이
+-- 하나의 암묵적 트랜잭션으로 묶어서, 정산이 한 행에서 실패하면 그날 전체 유저의
+-- 미션 생성까지 롤백되기 때문이다. 정산은 그제 이전, 생성은 오늘을 건드려서 대상
+-- 행이 겹치지 않으므로 순서를 보장할 필요도 없다.
+select cron.schedule('settle-missions', '0 21 * * *', $$select settle_missions()$$);
 select cron.schedule(
   'generate-daily-missions',
   '0 21 * * *',
-  $$select settle_missions(); select generate_daily_missions()$$
+  $$select generate_daily_missions()$$
 );
 
 select cron.alter_job(jobid, schedule := '5 21 * * *')

@@ -142,9 +142,11 @@ def _settle(conn):
 
 def test_settle_pays_achieved_and_fails_missed_and_ignores_today(conn, user):
     app_id, _ = _apps(conn)[0]
-    achieved = _typed_mission(conn, user, metric="usage_minutes", app_id=app_id, target=30)
-    missed = _typed_mission(conn, user, metric="pet_calls", target=2)
-    _pet_calls(conn, user, -1, 9)
+    achieved = _typed_mission(
+        conn, user, metric="usage_minutes", app_id=app_id, target=30, day_offset=-2
+    )
+    missed = _typed_mission(conn, user, metric="pet_calls", target=2, day_offset=-2)
+    _pet_calls(conn, user, -2, 9)
     today = _make_mission(conn, user, 0)
 
     _settle(conn)
@@ -155,29 +157,96 @@ def test_settle_pays_achieved_and_fails_missed_and_ignores_today(conn, user):
     assert balance(conn, user) == 50, "지킨 한 건만 지급"
 
 
-def test_settle_twice_does_not_pay_twice(conn, user, finished_mission):
+def test_settle_leaves_yesterdays_mission_claimable(conn, user, finished_mission):
+    """어제 미션은 정산하지 않는다 — 오늘 하루 종일 수령할 수 있어야 한다.
+
+    유예가 없으면 수령 창이 KST 00:00~06:00 여섯 시간뿐이라 FE의 "받기" 버튼이
+    사실상 죽는다.
+    """
+    _settle(conn)
+
+    assert _status(conn, finished_mission) == "in_progress"
+    assert balance(conn, user) == 0
+
+    _claim(conn, user, finished_mission)
+    assert balance(conn, user) == 50
+
+
+def test_settle_fails_stale_missions_without_paying(conn, user):
+    """유예가 한참 지난 미션은 지급 없이 failed로 정리한다.
+
+    mission_achieved는 기록이 없으면 "지켰다"로 보는데, 오래된 미션은 그 기록이
+    없는 게 정상이다. 하한이 없으면 배포 직후 첫 실행에서 그동안 쌓인 미수령
+    미션이 전부 성공 판정으로 한꺼번에 지급된다.
+    """
+    stale = [
+        _typed_mission(conn, user, metric="usage_minutes", target=30, day_offset=d)
+        for d in (-3, -10, -40)
+    ]
+
+    _settle(conn)
+
+    assert [_status(conn, um) for um in stale] == ["failed"] * 3
+    assert balance(conn, user) == 0, "오래된 미션은 한 푼도 지급하지 않는다"
+
+
+def test_settle_twice_does_not_pay_twice(conn, user):
+    _typed_mission(conn, user, metric="usage_minutes", target=30, day_offset=-2)
     _settle(conn)
     _settle(conn)
     assert balance(conn, user) == 50
 
 
-def test_settle_does_not_pay_a_mission_that_was_already_claimed(conn, user, finished_mission):
-    _claim(conn, user, finished_mission)
+def test_settle_does_not_pay_a_mission_that_was_already_claimed(conn, user):
+    um = _typed_mission(conn, user, metric="usage_minutes", target=30, day_offset=-2)
+    _claim(conn, user, um)
     _settle(conn)
     assert balance(conn, user) == 50, "수령 50 + 정산 0이어야 한다"
 
 
-def test_client_cannot_call_settle_or_the_achievement_check(conn, user, finished_mission):
-    as_user(conn, user)
-    try:
-        with pytest.raises(psycopg2.errors.InsufficientPrivilege):
-            conn.cursor().execute("select settle_missions()")
-        with pytest.raises(psycopg2.errors.InsufficientPrivilege):
-            conn.cursor().execute(
-                "select mission_achieved(%s, %s)", (user, str(uuid.uuid4()))
-            )
-    finally:
-        as_admin(conn)
+def test_claiming_an_already_settled_mission_is_a_no_op(conn, user):
+    """정산이 먼저 지급한 뒤 FE가 "받기"를 눌러도 에러가 아니라 조용히 끝나야 한다.
+
+    코인은 이미 들어가 있는데 예외가 나면 "성공했는데 에러 화면"이 된다.
+    """
+    um = _typed_mission(conn, user, metric="usage_minutes", target=30, day_offset=-2)
+    _settle(conn)
+    assert _status(conn, um) == "completed"
+    assert balance(conn, user) == 50
+
+    _claim(conn, user, um)  # 예외가 나면 안 된다
+
+    assert balance(conn, user) == 50, "두 번 지급되면 안 된다"
+
+
+def test_claiming_a_failed_mission_still_raises(conn, user):
+    um = _typed_mission(conn, user, metric="pet_calls", target=2, day_offset=-2)
+    _pet_calls(conn, user, -2, 9)
+    _settle(conn)
+    assert _status(conn, um) == "failed"
+
+    with pytest.raises(psycopg2.errors.RaiseException, match="already completed"):
+        _claim(conn, user, um)
+    assert balance(conn, user) == 0
+
+
+def test_client_cannot_call_the_batches_or_the_achievement_check(conn, user):
+    """전체 유저의 코인·미션을 움직이는 배치는 로그인 사용자가 부를 수 없어야 한다.
+
+    generate_daily_missions는 create or replace로 다시 써도 최초 create 때
+    PUBLIC에 부여된 execute가 남아 있어서, 명시적으로 회수해야 막힌다.
+    """
+    for sql, params in (
+        ("select settle_missions()", ()),
+        ("select generate_daily_missions()", ()),
+        ("select mission_achieved(%s, %s)", (user, str(uuid.uuid4()))),
+    ):
+        as_user(conn, user)
+        try:
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                conn.cursor().execute(sql, params)
+        finally:
+            as_admin(conn)
 
 
 # ── 미션 생성 ────────────────────────────────────────────────────────────
@@ -246,9 +315,45 @@ def test_generation_is_idempotent(conn, user):
     assert len(_todays_missions(conn, user)) == 2
 
 
-# ── 펫 호출 횟수 RLS ─────────────────────────────────────────────────────
+def test_generation_falls_back_to_total_usage_when_no_apps_are_enabled(conn, user):
+    """활성 앱이 없으면 펫 호출 미션 하나만 남는데, 그 미션은 기록이 없을 때 항상
+    성공이라 매일 코인이 공짜로 나간다. 전체 사용시간 미션으로 폴백해야 한다.
 
-def test_pet_calls_are_private_to_their_owner(conn, user, other_user):
+    user_detected_apps를 채우는 경로가 BE에 없어서(FE 온보딩이 맡는다) 실제로
+    비어 있을 수 있다.
+    """
+    app_id, _ = _apps(conn)[0]
+    _usage(conn, user, app_id, -1, 100)  # 앱은 안 켰지만 사용 기록은 있다
+
+    conn.cursor().execute("select generate_daily_missions()")
+    missions = _todays_missions(conn, user)
+
+    usage_missions = [m for m in missions if m[0] == "usage_minutes"]
+    assert len(usage_missions) == 1
+    assert usage_missions[0][1] is None, "앱 지정 없는 전체 사용시간 미션이어야 한다"
+    assert usage_missions[0][2] == 90, "어제 총 사용시간 - 10분"
+    assert len(missions) == 2, "폴백 1개 + 펫 호출 1개"
+
+
+# ── 펫 호출 횟수 ─────────────────────────────────────────────────────────
+
+def _call_count(conn, user_id):
+    cur = conn.cursor()
+    cur.execute(
+        "select calls from daily_pet_calls "
+        "where user_id = %s and usage_date = (now() at time zone 'Asia/Seoul')::date",
+        (user_id,),
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def test_pet_calls_are_private_and_not_client_writable(conn, user, other_user):
+    """calls가 곧 미션 성공 판정이라 클라이언트가 직접 쓰면 0으로 적어 코인을 가져간다.
+
+    #22가 pets.affection·profiles.pet_slot_limit에 대해 막은 것과 같은 이유로,
+    select만 열고 쓰기는 record_pet_call()에만 맡긴다.
+    """
     _pet_calls(conn, other_user, -1, 4)
 
     as_user(conn, user)
@@ -256,15 +361,34 @@ def test_pet_calls_are_private_to_their_owner(conn, user, other_user):
         cur = conn.cursor()
         cur.execute("select count(*) from daily_pet_calls")
         assert cur.fetchone()[0] == 0, "남의 횟수는 안 보인다"
-        cur.execute(
-            "insert into daily_pet_calls (user_id, usage_date, calls) values (%s, current_date, 1)",
-            (user,),
-        )
-        with pytest.raises(psycopg2.errors.InsufficientPrivilege):
-            cur.execute(
-                "insert into daily_pet_calls (user_id, usage_date, calls) "
-                "values (%s, current_date, 1)",
-                (other_user,),
-            )
     finally:
         as_admin(conn)
+
+    for target in (user, other_user):
+        as_user(conn, user)
+        try:
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                conn.cursor().execute(
+                    "insert into daily_pet_calls (user_id, usage_date, calls) "
+                    "values (%s, current_date, 0)",
+                    (target,),
+                )
+        finally:
+            as_admin(conn)
+
+
+def test_record_pet_call_counts_up_for_the_caller_only(conn, user, other_user):
+    _pet_calls(conn, other_user, 0, 7)
+
+    as_user(conn, user)
+    try:
+        cur = conn.cursor()
+        cur.execute("select record_pet_call()")
+        assert cur.fetchone()[0] == 1, "첫 호출은 1"
+        cur.execute("select record_pet_call()")
+        assert cur.fetchone()[0] == 2, "같은 날 재호출은 누적"
+    finally:
+        as_admin(conn)
+
+    assert _call_count(conn, user) == 2
+    assert _call_count(conn, other_user) == 7, "남의 횟수는 안 건드린다"
