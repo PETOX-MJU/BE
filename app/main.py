@@ -7,14 +7,12 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import create_engine, text
 from supabase import create_client
 
 load_dotenv()
 
 app = FastAPI(title="peTox API")
 
-engine = create_engine(os.environ["DATABASE_URL"])
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
 # ADR-010: Supabase가 이미 비대칭키(JWT Signing Keys)로 전환했으므로 JWKS를
@@ -50,18 +48,6 @@ def get_current_user_id(
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-
-@app.get("/db-health")
-def db_health():
-    with engine.connect() as conn:
-        conn.execute(text("SELECT 1"))
-    return {"db": "ok"}
-
-
-@app.get("/items/{item_id}")
-def read_item(item_id: int, q: str | None = None):
-    return {"item_id": item_id, "q": q}
 
 
 class SignUpRequest(BaseModel):
