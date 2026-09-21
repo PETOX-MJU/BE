@@ -13,7 +13,14 @@ import uuid
 import psycopg2
 import pytest
 
-from tests.conftest import _make_mission, as_admin, as_user, balance, requires_db
+from tests.conftest import (
+    _make_mission,
+    as_admin,
+    as_user,
+    balance,
+    requires_db,
+    sync_heartbeat,
+)
 
 pytestmark = requires_db
 
@@ -128,6 +135,7 @@ def test_app_mission_counts_only_that_apps_usage(conn, user):
 
 def test_pet_calls_mission_uses_the_call_count(conn, user):
     um = _typed_mission(conn, user, metric="pet_calls", target=2)
+    sync_heartbeat(conn, user, -1)
     _pet_calls(conn, user, -1, 3)
 
     with pytest.raises(psycopg2.errors.RaiseException, match="target not met"):
@@ -147,6 +155,7 @@ def test_settle_pays_achieved_and_fails_missed_and_ignores_today(conn, user):
         conn, user, metric="usage_minutes", app_id=app_id, target=30, day_offset=-1
     )
     missed = _typed_mission(conn, user, metric="pet_calls", target=2, day_offset=-1)
+    sync_heartbeat(conn, user, -1)
     _pet_calls(conn, user, -1, 9)
     today = _make_mission(conn, user, 0)
 
@@ -156,6 +165,42 @@ def test_settle_pays_achieved_and_fails_missed_and_ignores_today(conn, user):
     assert _status(conn, missed) == "failed"
     assert _status(conn, today) == "in_progress", "오늘 미션은 아직 안 끝났다"
     assert balance(conn, user) == 50, "지킨 한 건만 지급"
+
+
+def test_settle_does_not_pay_when_usage_was_never_synced(conn, user):
+    """수집 기록이 없는 날은 지급하지 않는다.
+
+    mission_achieved가 coalesce(..., 0)을 쓰기 때문에, 이 전제가 없으면 사용시간이
+    한 번도 안 올라온 날도 0분으로 읽혀 0 <= target이 참이 된다. FE에 수집이 붙기
+    전까지는 그게 "아무것도 안 해도 매일 전부 성공"을 뜻한다.
+    """
+    app_id, _ = _apps(conn)[0]
+    usage = _typed_mission(
+        conn, user, metric="usage_minutes", app_id=app_id, target=30, day_offset=-1
+    )
+    pet = _typed_mission(conn, user, metric="pet_calls", target=2, day_offset=-1)
+    # daily_usage 행을 심지 않는다 — 앱이 그날 한 번도 보고하지 않은 상태
+
+    _settle(conn)
+
+    assert [_status(conn, usage), _status(conn, pet)] == ["failed", "failed"]
+    assert balance(conn, user) == 0
+
+
+def test_a_zero_minute_row_is_enough_to_be_judged(conn, user):
+    """0분짜리 행이라도 있으면 정상 판정한다.
+
+    전제는 "많이 썼는가"가 아니라 "그날 앱이 살아서 보고했는가"다. 폰을 켜고
+    숏폼 앱을 하나도 안 썼다면 0분이 올라오고, 그건 성공이 맞다.
+    """
+    usage = _typed_mission(conn, user, metric="usage_minutes", target=30, day_offset=-1)
+    pet = _typed_mission(conn, user, metric="pet_calls", target=2, day_offset=-1)
+    sync_heartbeat(conn, user, -1)
+
+    _settle(conn)
+
+    assert [_status(conn, usage), _status(conn, pet)] == ["completed", "completed"]
+    assert balance(conn, user) == 100, "둘 다 50코인씩"
 
 
 def test_settle_fails_stale_missions_without_paying(conn, user):
@@ -232,6 +277,7 @@ def test_claiming_a_weekly_mission_says_so_instead_of_not_found(conn, user):
 
 def test_claiming_a_failed_mission_still_raises(conn, user):
     um = _typed_mission(conn, user, metric="pet_calls", target=2, day_offset=-1)
+    sync_heartbeat(conn, user, -1)  # 미동기화가 아니라 목표 초과로 실패시킨다
     _pet_calls(conn, user, -1, 9)
     _settle(conn)
     assert _status(conn, um) == "failed"
