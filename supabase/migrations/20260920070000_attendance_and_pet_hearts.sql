@@ -44,13 +44,23 @@ begin
 
   if v_inserted = 1 then
     v_coins := 5 + case when v_streak % 7 = 0 then 30 else 0 end;
+    -- 날짜를 to_char로 고정한다. date를 그냥 text로 이어붙이면 세션의 DateStyle
+    -- 설정을 타는데(security definer는 이 설정을 초기화하지 않는다), 키 문자열이
+    -- 달라지는 순간 unique 제약이 안 걸려 같은 날 이중 지급이 된다.
     insert into coin_ledger (user_id, amount, reason, request_id)
-    values (auth.uid(), v_coins, 'attendance', md5('checkin:' || auth.uid() || v_today)::uuid);
+    values (auth.uid(), v_coins, 'attendance',
+            md5('checkin:' || auth.uid() || ':' || to_char(v_today, 'YYYYMMDD'))::uuid);
   end if;
 
   return query select v_streak, v_coins;
 end;
 $$;
+
+-- 저장소의 다른 RPC와 같이 권한을 명시한다. 이게 없으면 CREATE FUNCTION이 PUBLIC에
+-- 자동으로 주는 execute에 기대게 되고, anon도 호출할 수 있다. 지금 anon이 막히는
+-- 것은 auth.uid()가 NULL이라 NOT NULL 위반으로 터지기 때문이지 의도한 방어가 아니다.
+revoke execute on function check_in() from public, anon;
+grant execute on function check_in() to authenticated;
 
 -- 하트: 클라이언트가 pets.affection을 직접 못 올리므로(ADR-22) 이 RPC가 유일한 경로다.
 -- 한 번에 +5, 펫당 하루 +50까지, 애착도는 100을 넘지 않는다(FR-034). 100 제한은 check
@@ -103,3 +113,6 @@ begin
   return query select v_affection + v_gain, v_gain;
 end;
 $$;
+
+revoke execute on function pet_interact(uuid) from public, anon;
+grant execute on function pet_interact(uuid) to authenticated;

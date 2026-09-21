@@ -176,3 +176,24 @@ def test_client_cannot_read_others_interactions_or_write_any(conn, user, other_u
             )
     finally:
         as_admin(conn)
+
+
+# ── 실행 권한 ────────────────────────────────────────────────────────────
+
+def test_anon_cannot_call_either_rpc(conn, user):
+    """로그인하지 않은 호출은 권한 단계에서 막혀야 한다.
+
+    CREATE FUNCTION은 PUBLIC에 execute를 자동으로 준다. 명시적으로 회수하지
+    않으면 anon도 호출할 수 있고, 지금 막히는 것은 auth.uid()가 NULL이라
+    안에서 터지기 때문이지 의도한 방어가 아니다.
+    """
+    pet = _pet(conn, user)
+
+    for sql, params in (("select check_in()", ()), ("select pet_interact(%s)", (pet,))):
+        cur = conn.cursor()
+        cur.execute("set role anon")
+        try:
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute(sql, params)
+        finally:
+            as_admin(conn)
