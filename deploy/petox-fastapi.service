@@ -1,0 +1,12 @@
+[Unit]
+Description=peTox FastAPI
+After=network.target
+
+[Service]
+User=ec2-user
+WorkingDirectory=/home/ec2-user/BE
+ExecStart=/home/ec2-user/BE/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
