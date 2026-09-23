@@ -30,7 +30,7 @@
 | 출석 체크 | RPC `check_in` | [4](#4-rpc-함수) |
 | 오늘의 미션 보기 | 테이블 `user_missions` + `missions` | [3.4](#34-미션) |
 | 미션 보상 받기 | RPC `complete_mission` | [4](#4-rpc-함수) |
-| 코인 잔액 | 테이블 `coin_ledger`의 `amount` 합계 | [3.5](#35-코인) |
+| 코인 잔액 | RPC `coin_balance` | [3.5](#35-코인) |
 | 상점 목록 | 테이블 `items` | [3.6](#36-상점--내-아이템) |
 | 아이템 구매 | RPC `buy_item` | [4](#4-rpc-함수) |
 | 아이템 장착/해제 | 테이블 `user_items`의 `is_equipped` | [3.6](#36-상점--내-아이템) |
@@ -75,6 +75,8 @@ final token = supabase.auth.currentSession?.accessToken;
 모든 테이블은 **내 데이터만** 보이고 바뀐다. 다른 사람 행은 조회해도 빈 결과가 나온다. 그래서 `user_id`로 필터를 걸 필요는 없지만, insert할 때는 `user_id`에 내 id를 넣어야 한다.
 
 표의 "쓸 수 있는 컬럼"에 없는 컬럼을 바꾸려 하면 `permission denied` 에러가 난다.
+
+`profiles`와 `pets`에는 `upsert`를 쓰지 않는다. upsert는 `id`까지 update하려고 해서 권한 에러가 난다. 새로 만들 때는 `insert`, 바꿀 때는 `update`를 쓴다.
 
 ### 3.1 프로필
 
@@ -153,7 +155,13 @@ final missions = await supabase
 
 ### 3.5 코인
 
-테이블 `coin_ledger` (조회만). 코인이 들고 날 때마다 한 줄씩 쌓인다. **잔액 = `amount` 전체 합계.**
+**잔액은 `coin_balance` RPC로 받는다.** 숫자 하나가 온다.
+
+```dart
+final int balance = await supabase.rpc('coin_balance');
+```
+
+획득·사용 내역 화면이 필요하면 테이블 `coin_ledger`(조회만)를 읽는다. 코인이 들고 날 때마다 한 줄씩 쌓인다.
 
 | 필드 | 설명 |
 |---|---|
@@ -207,6 +215,7 @@ await supabase.rpc('buy_item', params: {
 | `check_in` | 없음 | `[{streak, coins_awarded}]` | 출석. 5코인, 연속 7일마다 +30코인. 같은 날 다시 불러도 코인은 한 번만 들어온다(`coins_awarded` = 0) |
 | `pet_interact` | `p_pet_id` | `[{new_affection, hearts_gained}]` | 애착도 +5. 펫당 하루 최대 +50, 최대 100 |
 | `record_pet_call` | 없음 | 숫자 (오늘 누적 호출 수) | 펫을 부를 때마다 호출 |
+| `coin_balance` | 없음 | 숫자 (현재 코인 잔액) | 잔액 조회 |
 | `complete_mission` | `p_user_mission_id`, `p_request_id` | 없음 | 미션 보상 받기 |
 | `buy_item` | `p_item_id`, `p_request_id` | 없음 | 아이템 구매 |
 
