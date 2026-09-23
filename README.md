@@ -63,4 +63,136 @@
 
 ---
 
+## 아키텍처 — BE 레이어 구성
+
+### 전체 그림
+
+```
+React Native 앱 (Android, 박민규)
+  │
+  │ ① Supabase Auth SDK 직접 호출 (로그인/회원가입/로그아웃)
+  │ ② supabase-js로 본인 데이터 CRUD (profiles, pets, usage_logs 등)
+  │ ③ Row-Level Security(RLS)가 본인 데이터만 노출하도록 격리
+  │
+  ↓ HTTPS (JWT Bearer 토큰)
+FastAPI (김민형) — 진짜 하는 일 딱 2개
+  │ ① JWT 검증 (Supabase JWKS에서 공개키를 가져와 로컬에서 ES256 서명 검증 — ADR-010)
+  │ ② 주간 리포트 집계 + 해석 (Supabase RPC 3개 호출 → 전주 대비 % 계산 → 문구 생성 — ADR-011)
+  │
+  ↓ (JWT Bearer + service_role key 이중 인증으로 RPC 호출)
+Supabase (PostgreSQL + Auth + RPC + Edge Function + Cron Jobs)
+  │ ① 인증: Supabase Auth (JWT 발급/검증, RS256 비대칭키)
+  │ ② 신뢰 로직: security definer RPC (코인 지급, 아이템 구매 — ADR-004)
+  │ ③ 집계: weekly_report / weekly_report_daily / weekly_report_by_app SQL 함수
+  │ ④ 스케줄링: daily_mission_generation(06:00) + send-mission-notifications(06:05)
+```
+
+### 핵심 설계 결정 — FastAPI를 작게 만든 이유 (ADR-002)
+
+이 프로젝트에서 FastAPI가 하는 일은 생각보다 적다. 엔드포인트는 `/health`, `/auth/signup`, `/me`, `/reports/weekly` 정도고, 그중 실질적으로 의미가 있는 건 **JWT 검증(`/me`)** 과 **주간 리포트(`/reports/weekly`)** 둘뿐이다. 프로필·반려동물·사용 로그·미션·코인·상점 CRUD는 FastAPI를 거치지 않는다.
+
+이유를 소급해서 정리하면:
+
+1. **Supabase Auth + RLS만으로 보안 모델이 완성된다.** 로그인 세션 토큰(JWT)만 있으면 클라이언트가 직접 DB를 호출할 수 있고, RLS가 `auth.uid()` 기준으로 본인 데이터만 노출한다. 이걸 FastAPI가 중간에서 프록시할 이유가 없어지므로, CRUD는 클라이언트가 Supabase를 직접 호출한다.
+
+2. **Stateless JWT → 세션 스토어가 필요 없다.** FastAPI가 세션을 관리할 필요가 없다. 매 요청마다 Supabase JWKS 엔드포인트에서 공개키를 가져와 로컬에서 서명만 검증하면 된다(ES256, ADR-010).
+
+3. **FastAPI는 Supabase 서비스 롤 키를 노출하지 않고 쓸 수 있는 기능만 남긴다.** `SUPABASE_KEY`(서비스 롤)는 RLS를 우회할 수 있는 키라서 클라이언트에 절대 주면 안 된다. 이 키로 할 수 있는 일 — 사용자의 JWT를 실어 RPC를 호출하거나, RLS 제약을 넘는 집계를 실행하거나 — 이 FastAPI 존재의 실질적 근거가 된다.
+
+### 데이터가 어디서 생성되고 어디로 흐르는가
+
+#### A. 온보딩/회원가입
+
+```
+FE: Supabase Auth SDK → auth.sign_up(email, password)
+        ↓
+Supabase Auth: JWT 발급 + auth.users 행 생성
+        ↓ (트리거 handle_new_user)
+profiles 행 자동 생성 (goal_minutes 등 기본값 포함)
+        ↓
+FE: profiles, pets 등 본인 데이터 직접 upsert (RLS가 본인만 접근 허용)
+```
+
+FastAPI는 이 흐름에서 아무 역할도 하지 않는다. `POST /auth/signup` 엔드포인트가 있긴 하지만, Supabase Auth SDK를 랩퍼하는 수준이고 클라이언트에서 직접 해도 되는 작업이다.
+
+#### B. 사용 시간 로깅 (ADR-003)
+
+```
+FE: UsageStatsManager / AccessibilityService로 숏폼 앱 사용 감지
+        ↓
+FE: daily_usage 테이블에 직접 upsert (RLS insert 정책 허용)
+        ↓
+Supabase: (user_id, app_id, usage_date) 복합 PK로 "조합당 행 하나" 보장 → 멱등 동기화
+```
+
+`daily_usage`는 클라이언트가 **직접 INSERT할 수 있다**. 복합 PK `(user_id, app_id, usage_date)`가 upsert를 멱등하게 만든다. 세션 단위의 개별 사용 내역은 저장하지 않고, 일·앱 단위 집계(`minutes`)로만 저장한다 — 읽는 화면이 없기 때문이다.
+
+#### C. 주간 리포트 조회 (ADR-011) — FastAPI가 실제로 쓰이는 유일한 본격 엔드포인트
+
+```
+FE: GET /reports/weekly (JWT Bearer 첨부)
+        ↓
+FastAPI: get_current_user_id → JWKS 공개키로 JWT 검증 → user_id 추출
+        ↓
+FastAPI: _call_report_rpc("weekly_report", user_jwt)
+              → Supabase RPC 호출 (service_role key + user JWT 이중 인증)
+              → weekly_report_daily(), weekly_report_by_app()도 동일한 패턴으로 호출
+        ↓
+Supabase: auth.uid() = 본인 → 본인 주간 합계/일별/앱별 집계 반환
+        ↓
+FastAPI: 3개 RPC 결과 → 전주 대비 % 계산 + 긍정/중립/경고 문구 생성 → 응답 조립
+```
+
+이 흐름에서 FastAPI가 하는 일은 **Supabase RPC가 날것의 숫자를 던져주면, 그걸 해석해서 프론트가 바로 쓸 수 있는 형태로 만드는 것**이다. RPC 자체는 집계만 하고, "32.5% 줄였어요!" 같은 사용자-facing 문구는 FastAPI가 생성한다.
+
+### 신뢰 경계 — 코인은 클라이언트 마음대로 못 건드린다 (ADR-004)
+
+코인 관련 테이블은 **클라이언트가 직접 INSERT할 수 없다**:
+
+- `coin_ledger` — 쓰기 RLS 정책 없음. 읽기만 허용 (`own coin_ledger select`).
+- `user_items` — 쓰기는 `is_equipped` 토글용 update만 허용. 구매로 인한 insert는 불가.
+
+대신 `security definer` PostgreSQL 함수 두 개가 유일한 쓰기 경로다:
+
+| 함수 | 역할 | 신뢰 보장을 위해 넣은 것 |
+|---|---|---|
+| `complete_mission(p_user_mission_id, p_request_id)` | 미션 완료 → 코인 지급 | request_id 멱등키, status 조건 update, RLS 우회 |
+| `buy_item(p_item_id, p_request_id)` | 아이템 구매 → 코인 차감 + 아이템/슬롯 지급 | request_id 멱등키, 잔액 부족 시 예외, pet_slot이면 profiles.pet_slot_limit 증가 |
+
+`security definer`라서 함수 실행 주체는 호출자이지만, 함수 내부에서는 RLS를 우회해 `coin_ledger`, `user_items`, `profiles`에 쓸 수 있다. 그래서 이 함수들이 해당 테이블들의 **구조적 유일한 쓰기 경로**가 된다 — 클라이언트가 "코인 확인 없이 코인 지급"을 시도할 수 없게 만든다.
+
+### 멱등성과 동시성 (ADR-008)
+
+`request_id` unique 제약은 **같은 요청의 재시도**만 막는다. 하지만 request_id가 다른 두 요청이 동시에 들어오면 막지 못한다 — 실제 동시성 테스트(`tests/test_rpc_trust.py`)에서 실증되었다:
+
+- `buy_item`: 잔액 100에 60짜리 두 건 동시 → 둘 다 잔액을 100으로 읽고 통과 → 잔액 -20
+- `complete_mission`: 같은 미션 두 건 동시 → 둘 다 `in_progress`를 읽고 각자 보상 지급 → 보상 이중 지급
+
+이 문제의 해법이 **사용자 단위 advisory lock**이다 (`pg_advisory_xact_lock(hashtextextended(auth.uid()::text, 0))`). 함수 진입 직후 걸어서, 같은 사용자의 코인 변경만 직렬화하고 다른 사용자는 막지 않는다. 트랜잭션 끝나면 자동 해제되므로 해제를 잊을 수 없다. 단, advisory lock은 DB 인스턴스 범위라서 읽기 레플리카로 쓰기를 분산하거나 샤딩하면 무효가 된다 — 지금 규모(단일 인스턴스, ADR-001)에서는 유효하고, 그 전제가 바뀌면 재검토 대상이다.
+
+### JWT 검증 방식 (ADR-010)
+
+Supabase가 JWT 서명 방식을 대칭키에서 비대칭키(RS256)로 전환했기 때문에, 새 시크릿을 공유받을 필요 없이 Supabase JWKS 공개 엔드포인트(`/auth/v1/.well-known/jwks.json`)에서 공개키를 가져와 로컬에서 서명을 검증한다. 알고리즘은 ES256만 허용하고, `aud`는 Supabase가 로그인 세션 토큰에 항상 넣는 `"authenticated"`로 고정한다.
+
+`/me` 엔드포인트는 이 검증을 거쳐 `sub`를 그대로 반환한다 — "이 JWT가 유효하고 누구 것인지"만 확인하는 용도다. `get_current_user_id` 의존성으로 추출돼 있고, 테스트에서 `app.dependency_overrides`로 갈아끼울 수 있게 돼 있다.
+
+### daily_mission_generation과 알림 (Supabase 측)
+
+일일 미션 생성(`20260911070000_daily_mission_generation.sql`)과 미션 알림 발송은 **FastAPI를 거치지 않는다**:
+
+- `generate_daily_missions()` 함수가 매일 06:00에 실행되어 그날 미션을 `missions` / `user_missions`에 생성
+- Supabase Cron Jobs가 06:05에 Supabase Edge Function `send-mission-notifications`를 호출하여 FCM 발송
+
+FR-057(푸시 알림: 미션, P0)은 원래 FastAPI에 엔드포인트가 있을 예정이었지만, ADR-18에 따라 Supabase Edge Function + Cron Jobs로 구현됐다.
+
+---
+
+## 기대 효과
+
+**사회적 효과**: 강제 차단 대신 캐릭터와의 유대감으로 스스로 화면에서 벗어나도록 유도하기 때문에, 차단형 앱에 거부감을 느끼던 사용자도 부담 없이 시작할 수 있습니다. 자발적 중단이 반복되면 자극적인 콘텐츠에 계속 노출되던 뇌에 휴식 시간이 생기고, 알고리즘에 이끌려 흘려보내던 시간을 아낄 수 있습니다.
+
+**일상생활 개선**: 자기 전 무심코 이어지던 시청이 줄어들면서 잠드는 시간이 앞당겨지고 수면의 질이 회복됩니다. 학습·업무 중 습관적으로 휴대폰을 보는 횟수가 줄어 집중력을 되찾고, 절제한 시간이 캐릭터의 성장이라는 눈에 보이는 결과로 쌓이면서 지속적인 사용 습관 변화로 이어질 수 있습니다.
+
+---
+
 각주: [2025년 스마트폰 과의존 실태조사](https://www.nia.or.kr/site/nia_kor/ex/bbs/View.do?cbIdx=659)
