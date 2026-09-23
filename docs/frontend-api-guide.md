@@ -2,7 +2,7 @@
 
 ## 0. 먼저 알아둘 것 3가지
 
-1. **호출 경로가 두 개다.** 대부분은 Supabase SDK로 직접 하고, FastAPI 서버는 3가지(회원가입, 본인 확인, 주간 리포트)만 쓴다.
+1. **호출 경로가 두 개다.** 대부분은 Supabase SDK(`@supabase/supabase-js`)로 직접 하고, FastAPI 서버는 주간 리포트(와 토큰 확인)에만 쓴다.
 2. **로그인하면 받는 `access_token` 하나로 둘 다 쓴다.** Supabase SDK는 알아서 붙이고, FastAPI에는 `Authorization: Bearer <access_token>` 헤더로 직접 붙인다.
 3. **코인·레벨·애착도는 직접 못 바꾼다.** 반드시 RPC 함수를 호출해야 한다. 테이블에 직접 쓰면 권한 에러가 난다.
 
@@ -20,7 +20,7 @@
 
 | 하고 싶은 것 | 방법 | 자세히 |
 |---|---|---|
-| 회원가입 | FastAPI `POST /auth/signup` | [2.1](#21-회원가입) |
+| 회원가입 | Supabase Auth SDK `signUp` | [2.1](#21-회원가입) |
 | 로그인 / 로그아웃 | Supabase Auth SDK | [2.2](#22-로그인--로그아웃) |
 | 내 프로필 조회·수정 (닉네임, 목표 시간, FCM 토큰 등) | 테이블 `profiles` | [3.1](#31-프로필) |
 | 펫 목록·생성·이름 변경·삭제 | 테이블 `pets` | [3.2](#32-펫) |
@@ -42,32 +42,31 @@
 
 ### 2.1 회원가입
 
-FastAPI로 한다 (Supabase SDK의 `signUp` 아님).
+Supabase SDK로 직접 한다. FastAPI `POST /auth/signup`은 로그인 세션을 돌려주지 않아서, 가입 직후 프로필 저장 같은 호출을 할 수 없다. 쓰지 않는다.
 
+```ts
+const { data, error } = await supabase.auth.signUp({
+  email,
+  password,
+  options: { data: { nickname } }, // 닉네임을 계정 정보에 같이 실어 보낸다
+});
+// data.session이 null이면 이메일 인증을 기다리는 상태다 (Supabase의 Confirm email 설정이 켜진 경우)
 ```
-POST https://d2g07sp7f6lhnf.cloudfront.net/auth/signup
-Content-Type: application/json
 
-{ "email": "user@example.com", "password": "비밀번호" }
-```
-
-| 응답 | 본문 | 의미 |
-|---|---|---|
-| 200 | `{ "user_id": "uuid" }` | 가입 성공 (`user_id`가 `null`일 수도 있음) |
-| 400 | `{ "detail": "에러 메시지" }` | 가입 실패 (이미 가입된 이메일 등) |
-
-가입하면 `profiles` 행은 서버가 자동으로 만든다. 가입 후 바로 2.2의 로그인을 호출한다.
+- 가입하면 `profiles` 행은 서버가 자동으로 만든다.
+- 세션이 있으면(`data.session`이 있으면) 바로 로그인된 상태다.
 
 ### 2.2 로그인 / 로그아웃
 
 Supabase SDK로 직접 한다.
 
-```dart
-await supabase.auth.signInWithPassword(email: email, password: password);
+```ts
+await supabase.auth.signInWithPassword({ email, password });
 await supabase.auth.signOut();
 
 // FastAPI 호출 시 붙일 토큰
-final token = supabase.auth.currentSession?.accessToken;
+const { data } = await supabase.auth.getSession();
+const token = data.session?.access_token;
 ```
 
 ## 3. 테이블 직접 읽고 쓰기
@@ -93,11 +92,9 @@ final token = supabase.auth.currentSession?.accessToken;
 - `fcm_token`: 앱 실행 시마다 FCM 토큰으로 갱신한다 (미션 알림 발송에 쓰임)
 - `pet_slot_limit`: 읽기 전용, 보유 가능한 펫 수
 
-```dart
-final me = await supabase.from('profiles').select().single();
-await supabase.from('profiles')
-    .update({'nickname': '새닉네임'})
-    .eq('id', supabase.auth.currentUser!.id);
+```ts
+const { data: me } = await supabase.from('profiles').select().single();
+await supabase.from('profiles').update({ nickname: '새닉네임' }).eq('id', userId);
 ```
 
 ### 3.2 펫
@@ -121,12 +118,13 @@ Storage 버킷 `pet-photos` (비공개)
 - jpeg / png / webp, 최대 5MB
 - 비공개 버킷이라 공개 URL이 없다. 화면에 띄울 때는 `createSignedUrl`로 임시 URL을 만든다.
 
-```dart
-final uid = supabase.auth.currentUser!.id;
-final path = '$uid/${DateTime.now().millisecondsSinceEpoch}.png';
-await supabase.storage.from('pet-photos').uploadBinary(path, bytes);
+```ts
+const path = `${userId}/${Date.now()}.png`;
+// React Native에서는 파일을 ArrayBuffer로 바꿔서 올린다
+await supabase.storage.from('pet-photos').upload(path, arrayBuffer, { contentType: 'image/png' });
 // pets.source_photo_url 등에는 path를 저장한다
-final url = await supabase.storage.from('pet-photos').createSignedUrl(path, 3600);
+const { data } = await supabase.storage.from('pet-photos').createSignedUrl(path, 3600);
+// data.signedUrl을 <Image>에 쓴다 (1시간 유효)
 ```
 
 ### 3.4 미션
@@ -135,10 +133,10 @@ final url = await supabase.storage.from('pet-photos').createSignedUrl(path, 3600
 
 미션은 서버가 매일 자동으로 만든다. 날짜 기준은 한국 시간(KST)이다.
 
-```dart
-final missions = await supabase
-    .from('user_missions')
-    .select('id, status, coins_earned, missions(title, metric, target_minutes, target_count, reward_coins, valid_date)');
+```ts
+const { data: missions } = await supabase
+  .from('user_missions')
+  .select('id, status, coins_earned, missions(title, metric, target_minutes, target_count, reward_coins, valid_date)');
 ```
 
 | 필드 | 설명 |
@@ -157,8 +155,8 @@ final missions = await supabase
 
 **잔액은 `coin_balance` RPC로 받는다.** 숫자 하나가 온다.
 
-```dart
-final int balance = await supabase.rpc('coin_balance');
+```ts
+const { data: balance } = await supabase.rpc('coin_balance'); // number
 ```
 
 획득·사용 내역 화면이 필요하면 테이블 `coin_ledger`(조회만)를 읽는다. 코인이 들고 날 때마다 한 줄씩 쌓인다.
@@ -180,12 +178,12 @@ final int balance = await supabase.rpc('coin_balance');
 
 테이블 `daily_usage`. 앱이 측정한 사용시간을 **하루·앱마다 한 줄**로 올린다. 같은 날 다시 올리면 덮어쓰도록 upsert를 쓴다.
 
-```dart
+```ts
 await supabase.from('daily_usage').upsert({
-  'user_id': uid,
-  'app_id': appId,          // detected_apps.id
-  'usage_date': '2026-09-23', // 기기 날짜 (KST)
-  'minutes': 42,             // 그날 누적 분
+  user_id: userId,
+  app_id: appId,            // detected_apps.id
+  usage_date: '2026-09-23', // 기기 날짜 (KST)
+  minutes: 42,              // 그날 누적 분
 });
 ```
 
@@ -202,11 +200,12 @@ await supabase.from('daily_usage').upsert({
 
 코인·애착도처럼 조작되면 안 되는 값은 이 함수들로만 바뀐다. 모두 로그인 상태에서만 호출할 수 있고, 서버가 알아서 "나"를 대상으로 하므로 user id는 넘기지 않는다.
 
-```dart
-final result = await supabase.rpc('check_in');
-await supabase.rpc('buy_item', params: {
-  'p_item_id': itemId,
-  'p_request_id': const Uuid().v4(),
+```ts
+const { data, error } = await supabase.rpc('check_in'); // data: [{ streak, coins_awarded }]
+
+await supabase.rpc('buy_item', {
+  p_item_id: itemId,
+  p_request_id: requestId, // UUID v4
 });
 ```
 
@@ -223,7 +222,7 @@ await supabase.rpc('buy_item', params: {
 
 ### RPC 에러 메시지
 
-에러는 `PostgrestException`으로 오고, `message`에 아래 문구가 들어 있다.
+실패하면 `{ error }`가 오고, `error.message`에 아래 문구가 들어 있다.
 
 | 함수 | message | 의미 / 화면 처리 |
 |---|---|---|
@@ -249,7 +248,7 @@ await supabase.rpc('buy_item', params: {
 | 메서드 | 경로 | 로그인 필요 | 용도 |
 |---|---|---|---|
 | GET | `/health` | X | 서버 살아있는지 확인 |
-| POST | `/auth/signup` | X | 회원가입 ([2.1](#21-회원가입)) |
+| POST | `/auth/signup` | X | 쓰지 않음. 회원가입은 SDK로 한다 ([2.1](#21-회원가입)) |
 | GET | `/me` | O | 토큰 확인, 내 user id |
 | GET | `/reports/weekly` | O | 주간 리포트 |
 
