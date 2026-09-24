@@ -115,8 +115,8 @@ def test_buy_pet_slot_still_raises_limit(conn, user):
     slot = str(uuid.uuid4())
     cur = conn.cursor()
     cur.execute(
-        "insert into items (id, name, type, price_coins) values (%s, '슬롯', 'pet_slot', 50)",
-        (slot,),
+        "insert into items (id, name, type, price_coins) values (%s, %s, 'pet_slot', 50)",
+        (slot, f"슬롯 {slot}"),
     )
     grant_coins(conn, user, 100)
 
