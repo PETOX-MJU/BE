@@ -168,11 +168,18 @@ const { data: balance } = await supabase.rpc('coin_balance'); // number
 
 ### 3.6 상점 / 내 아이템
 
-- `items` (상점 목록, 조회만): `name`, `type`, `price_coins`, `image_url`
+- `items` (상점 목록, 조회만): `name`, `type`, `price_coins`, `image_url`, `theme_id`, `sort_order`
+  - `theme_id`: 이 아이템이 속한 테마의 `items.id`. 테마 자신과 테마 없는 아이템은 `null`
+  - `sort_order`: 테마 안에서의 단계(1부터). `theme_id`가 `null`이면 같이 `null`
+  - `name`은 중복되지 않는다. 앱은 이름으로 서버 아이템과 짝을 짓는다
   - `type`: `clothing`(옷) / `furniture`(가구) / `theme`(방 배경) / `pet_slot`(펫 슬롯 +1)
 - `user_items` (내가 산 것): 조회 가능, `is_equipped`만 수정 가능
   - 장착/해제는 `is_equipped`를 `true`/`false`로 바꾼다. 같은 종류를 하나만 장착하게 하는 처리는 앱에서 한다.
   - 구매는 반드시 `buy_item` RPC로 한다. `pet_slot`은 `user_items`에 생기지 않고 `profiles.pet_slot_limit`가 1 늘어난다.
+- **구매 규칙** (서버가 막는다. `pet_slot`은 예외라 여러 번 살 수 있다)
+  1. 이미 가진 테마·아이템은 다시 살 수 없다.
+  2. 테마에 속한 아이템은 그 테마를 먼저 사야 살 수 있다.
+  3. 같은 테마 안에서는 `sort_order`가 앞선 아이템을 모두 가져야 다음 것을 살 수 있다.
 
 ### 3.7 사용시간 업로드
 
@@ -228,6 +235,9 @@ await supabase.rpc('buy_item', {
 |---|---|---|
 | `buy_item` | `코인이 부족합니다` | 잔액 부족 |
 | `buy_item` | `item not found` | 없는 아이템 id |
+| `buy_item` | `이미 보유한 아이템입니다` | 중복 구매 |
+| `buy_item` | `테마를 먼저 구매해야 합니다` | 테마 없이 그 테마 아이템 구매 |
+| `buy_item` | `앞 단계 아이템을 먼저 구매해야 합니다` | 순서 건너뜀 |
 | `complete_mission` | `mission not finished` | 아직 미션 날짜가 안 지남 (오늘 미션) |
 | `complete_mission` | `mission target not met` | 목표 달성 실패 |
 | `complete_mission` | `mission not found` | 없는 미션 id |

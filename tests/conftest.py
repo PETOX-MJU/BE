@@ -102,17 +102,23 @@ def other_user(conn):
     yield uid
 
 
-@pytest.fixture
-def item(conn):
-    """가격 60코인짜리 의류 아이템. type은 clothing / pet_slot 둘만 허용된다."""
+def insert_item(connection, type_="clothing", price=60, theme_id=None, sort_order=None) -> str:
+    """아이템 하나. items.name은 유일해야 해서(FE가 이름으로 짝을 짓는다) 이름에 id를 붙인다."""
     iid = str(uuid.uuid4())
-    cur = conn.cursor()
+    cur = connection.cursor()
     cur.execute(
-        "insert into items (id, name, type, price_coins) values (%s, %s, %s, %s)",
-        (iid, "테스트 모자", "clothing", 60),
+        "insert into items (id, name, type, price_coins, theme_id, sort_order) "
+        "values (%s, %s, %s, %s, %s, %s)",
+        (iid, f"테스트 {type_} {iid}", type_, price, theme_id, sort_order),
     )
     cur.close()
-    yield iid
+    return iid
+
+
+@pytest.fixture
+def item(conn):
+    """가격 60코인짜리 의류 아이템. 테마에 속하지 않아 구매 순서 규칙을 타지 않는다."""
+    yield insert_item(conn)
 
 
 def grant_coins(connection, user_id: str, amount: int):

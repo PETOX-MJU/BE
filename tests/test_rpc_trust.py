@@ -18,6 +18,7 @@ from tests.conftest import (
     as_user,
     balance,
     grant_coins,
+    insert_item,
     requires_db,
     run_concurrently,
 )
@@ -108,10 +109,14 @@ def test_concurrent_buys_must_not_overdraw(conn, user, item):
     잔액 100, 가격 60 — 하나만 성공해야 한다. buy_item은 SUM으로 잔액을 읽고
     INSERT 하는데 그 사이에 잠금이 없다. 두 트랜잭션이 같은 잔액을 읽으면
     둘 다 검사를 통과한다.
+
+    서로 다른 아이템을 산다. 같은 아이템이면 중복 구매 규칙(ADR-34)이 먼저 막아서
+    잠금이 없어도 통과해 버린다.
     """
     grant_coins(conn, user, 100)
+    items = iter([item, insert_item(conn)])
     errors = run_concurrently(
-        2, lambda cur: cur.execute("select buy_item(%s, %s)", (item, str(uuid.uuid4()))), user
+        2, lambda cur: cur.execute("select buy_item(%s, %s)", (next(items), str(uuid.uuid4()))), user
     )
 
     final = balance(conn, user)
