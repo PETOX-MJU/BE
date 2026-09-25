@@ -104,10 +104,14 @@ await supabase.from('profiles').update({ nickname: '새닉네임' }).eq('id', us
 | 동작 | 가능 여부 |
 |---|---|
 | 조회 / 삭제 | O |
-| 생성 | `user_id`, `name`, `is_default`, `source_photo_url`, `pixel_image_url`만 넣을 수 있음 |
-| 수정 | `name`, `is_default`, `source_photo_url`, `pixel_image_url`만 |
+| 생성 | `user_id`, `name`, `is_default`, `source_photo_url`, `pixel_image_url`, `breed`, `main_swatch`, `sub_swatch`만 넣을 수 있음 |
+| 수정 | `name`, `is_default`, `source_photo_url`, `pixel_image_url`, `breed`, `main_swatch`, `sub_swatch`만 |
 
 - `level`, `affection`(애착도 0~100)은 읽기 전용이다. 애착도는 `pet_interact` RPC로만 오른다.
+- **캐릭터 백업**: 캐릭터는 폰에서 만들고 폰에 저장한다. 폰을 바꿔도 같은 캐릭터를 다시 만들 수 있게 `breed`(견종)와 `main_swatch`·`sub_swatch`(털색 이름)만 서버에 백업한다. 사진·캐릭터 이미지는 보내지 않는다(AI 레포 `pet_template` 규칙).
+  - `breed`: `corgi`, `dachshund`, `golden`, `husky`, `shiba`
+  - `main_swatch`, `sub_swatch`: `black`, `brown`, `red`, `golden`, `cream`, `white`, `gray`
+  - 셋 다 비워 둬도 된다. 목록에 없는 값(대소문자 포함)을 넣으면 `check constraint` 에러가 난다. 값 목록은 `breeds.json`과 같다.
 - 펫 수가 `profiles.pet_slot_limit`에 이미 찼으면 생성할 때 `pet slot limit reached` 에러가 난다. 슬롯은 상점의 `pet_slot` 아이템을 사면 늘어난다.
 
 ### 3.3 펫 사진
