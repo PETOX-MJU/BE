@@ -54,6 +54,7 @@ const { data, error } = await supabase.auth.signUp({
 ```
 
 - 가입하면 `profiles` 행은 서버가 자동으로 만든다. `options.data.nickname`도 이때 `profiles.nickname`에 같이 저장된다. 이메일 인증 때문에 세션이 없어도 저장되므로, 가입 직후 닉네임을 따로 update할 필요가 없다.
+- 카카오로 가입하면 `nickname` 대신 카카오 프로필 이름(`preferred_username`, 없으면 `name`)이 `profiles.nickname`에 들어간다.
 - 세션이 있으면(`data.session`이 있으면) 바로 로그인된 상태다.
 
 ### 2.2 로그인 / 로그아웃
