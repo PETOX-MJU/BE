@@ -5,7 +5,7 @@
   1. 하루가 끝나기 전이나 목표를 넘겼으면 수령이 거부된다
   2. 수령하지 않은 미션은 정산 때 지켰으면 같은 코인, 못 지켰으면 failed가 되고
      재실행해도 이중 지급이 없다
-  3. 오늘 미션은 앱별 2개 + 펫 호출 1개로 생성된다
+  3. 오늘 미션은 목표 시간 사용시간 미션 1개 + 펫 호출 1개로 생성된다(ADR-40)
 를 본다. 날짜는 전부 DB의 KST 기준이다.
 """
 import uuid
@@ -308,10 +308,9 @@ def test_client_cannot_call_the_batches_or_the_achievement_check(conn, user):
 
 # ── 미션 생성 ────────────────────────────────────────────────────────────
 
-def _enable(conn, user_id, app_id, enabled=True):
+def _enable(conn, user_id, app_id):
     conn.cursor().execute(
-        "insert into user_detected_apps (user_id, app_id, is_enabled) values (%s, %s, %s)",
-        (user_id, app_id, enabled),
+        "insert into user_detected_apps (user_id, app_id) values (%s, %s)", (user_id, app_id)
     )
 
 
@@ -329,39 +328,58 @@ def _todays_missions(conn, user_id):
     return rows
 
 
-def test_generates_top_two_apps_plus_pet_calls(conn, user):
-    (a, _), (b, _), (c, _) = _apps(conn)
-    for app in (a, b, c):
+def test_generates_goal_minutes_mission_plus_pet_calls(conn, user):
+    """ADR-40: 사용시간 미션은 어제 사용량과 무관하게 목표 시간(goal_minutes) 하나다."""
+    (a, _), (b, _) = _apps(conn)[:2]
+    for app in (a, b):
         _enable(conn, user, app)
     _usage(conn, user, a, -1, 100)
-    _usage(conn, user, b, -1, 5)
-    _usage(conn, user, c, -1, 60)
+    _usage(conn, user, b, -1, 60)
     _pet_calls(conn, user, -1, 6)
+    conn.cursor().execute("update profiles set goal_minutes = 45 where id = %s", (user,))
 
     conn.cursor().execute("select generate_daily_missions()")
     missions = _todays_missions(conn, user)
 
-    by_app = {m[1]: m for m in missions if m[0] == "usage_minutes"}
-    assert set(by_app) == {a, c}, "어제 사용량 상위 2개 앱만 (b 제외)"
-    assert by_app[a][2] == 90 and by_app[c][2] == 50, "어제 사용량 - 10분"
+    usage = [m for m in missions if m[0] == "usage_minutes"]
+    assert [(m[1], m[2]) for m in usage] == [(None, 45)], "앱 지정 없이 목표 시간 그대로"
     pet = [m for m in missions if m[0] == "pet_calls"]
     assert len(pet) == 1 and pet[0][3] == 5, "어제 횟수 - 1"
-    assert len(missions) == 3 and all(m[4] == 20 for m in missions)
+    assert len(missions) == 2 and all(m[4] == 20 for m in missions)
 
 
-def test_generation_floors_targets_and_skips_disabled_apps(conn, user):
-    (a, _), (b, _) = _apps(conn)[:2]
-    _enable(conn, user, a)
-    _enable(conn, user, b, enabled=False)
-    _usage(conn, user, a, -1, 5)  # 5 - 10 < 15 이므로 최소 15분
-    _usage(conn, user, b, -1, 999)  # 꺼둔 앱은 미션이 안 생긴다
-
+def test_generation_uses_default_goal_and_floors_pet_calls(conn, user):
+    """목표 시간을 안 바꾼 사용자는 기본값 60분, 펫 호출은 최소 2회."""
     conn.cursor().execute("select generate_daily_missions()")
     missions = _todays_missions(conn, user)
 
-    apps = [m for m in missions if m[0] == "usage_minutes"]
-    assert [(m[1], m[2]) for m in apps] == [(a, 15)]
-    assert [m[3] for m in missions if m[0] == "pet_calls"] == [2], "횟수도 최소 2회"
+    assert [m[2] for m in missions if m[0] == "usage_minutes"] == [60]
+    assert [m[3] for m in missions if m[0] == "pet_calls"] == [2]
+
+
+@pytest.mark.parametrize("per_app, expected", [(15, "completed"), (20, "failed")])
+def test_goal_mission_settles_on_total_usage(conn, user, per_app, expected):
+    """판정은 그날 올라온 앱 사용시간 합계다. 앱 하나하나는 목표 이하여도 합이 넘으면 실패."""
+    (a, _), (b, _) = _apps(conn)[:2]
+    conn.cursor().execute("update profiles set goal_minutes = 30 where id = %s", (user,))
+    conn.cursor().execute("select generate_daily_missions()")
+    conn.cursor().execute(
+        "update missions set valid_date = valid_date - 1 where id in "
+        "(select mission_id from user_missions where user_id = %s)",
+        (user,),
+    )
+    _usage(conn, user, a, -1, per_app)
+    _usage(conn, user, b, -1, per_app)
+
+    _settle(conn)
+
+    cur = conn.cursor()
+    cur.execute(
+        "select um.status from user_missions um join missions m on m.id = um.mission_id "
+        "where um.user_id = %s and m.metric = 'usage_minutes'",
+        (user,),
+    )
+    assert cur.fetchone()[0] == expected, f"두 앱 합계 {per_app * 2}분, 목표 30분"
 
 
 def test_generation_is_idempotent(conn, user):
@@ -370,26 +388,6 @@ def test_generation_is_idempotent(conn, user):
     conn.cursor().execute("select generate_daily_missions()")
     conn.cursor().execute("select generate_daily_missions()")
     assert len(_todays_missions(conn, user)) == 2
-
-
-def test_generation_falls_back_to_total_usage_when_no_apps_are_enabled(conn, user):
-    """활성 앱이 없으면 펫 호출 미션 하나만 남는데, 그 미션은 기록이 없을 때 항상
-    성공이라 매일 코인이 공짜로 나간다. 전체 사용시간 미션으로 폴백해야 한다.
-
-    user_detected_apps를 채우는 경로가 BE에 없어서(FE 온보딩이 맡는다) 실제로
-    비어 있을 수 있다.
-    """
-    app_id, _ = _apps(conn)[0]
-    _usage(conn, user, app_id, -1, 100)  # 앱은 안 켰지만 사용 기록은 있다
-
-    conn.cursor().execute("select generate_daily_missions()")
-    missions = _todays_missions(conn, user)
-
-    usage_missions = [m for m in missions if m[0] == "usage_minutes"]
-    assert len(usage_missions) == 1
-    assert usage_missions[0][1] is None, "앱 지정 없는 전체 사용시간 미션이어야 한다"
-    assert usage_missions[0][2] == 90, "어제 총 사용시간 - 10분"
-    assert len(missions) == 2, "폴백 1개 + 펫 호출 1개"
 
 
 # ── 펫 호출 횟수 ─────────────────────────────────────────────────────────
@@ -409,7 +407,7 @@ def test_pet_calls_are_private_and_not_client_writable(conn, user, other_user):
     """calls가 곧 미션 성공 판정이라 클라이언트가 직접 쓰면 0으로 적어 코인을 가져간다.
 
     #22가 pets.affection·profiles.pet_slot_limit에 대해 막은 것과 같은 이유로,
-    select만 열고 쓰기는 record_pet_call()에만 맡긴다.
+    select만 열고 쓰기는 RPC(record_pet_call, report_pet_calls)에만 맡긴다.
     """
     _pet_calls(conn, other_user, -1, 4)
 
