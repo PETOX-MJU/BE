@@ -18,9 +18,8 @@ def test_server_mission_schedules_are_on(conn):
     )
     assert cur.fetchall() == [
         ("generate-daily-missions", "10 15 * * *"),
-        ("send-mission-notifications", "5 21 * * *"),
         ("settle-missions", "5 15 * * *"),
-    ]
+    ], "알림 cron은 FCM이 붙을 때까지 꺼 둔다 (20260929090000)"
 
 
 def test_client_cannot_claim_phone_mission_reward(conn, user):
