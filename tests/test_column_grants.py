@@ -3,12 +3,13 @@
 RLS는 행 단위라 본인 행이면 모든 컬럼을 고칠 수 있었다. 컬럼 권한으로 좁힌 뒤,
 막아야 할 것이 막히고 열어둔 것은 그대로 되는지 둘 다 본다.
 """
+import threading
 import uuid
 
 import psycopg2
 import pytest
 
-from tests.conftest import as_admin, as_user, grant_coins, requires_db
+from tests.conftest import LOCAL_DB_URL, as_admin, as_user, grant_coins, requires_db
 
 pytestmark = requires_db
 
@@ -108,6 +109,48 @@ def test_second_pet_is_rejected_until_slot_expands(conn, user, other_user):
 
     conn.cursor().execute("update profiles set pet_slot_limit = 2 where id = %s", (user,))
     _pet(conn, user)  # 한도를 늘리면 들어간다
+
+
+def test_concurrent_pet_inserts_cannot_exceed_slot_limit(conn, user):
+    """A가 펫을 넣고 커밋하기 전에 B가 넣으면, 잠금이 없을 때 B도 "0마리"로 보고 들어간다.
+
+    A의 트랜잭션을 열어 둔 채 B를 시작해서 겹치는 순간을 매번 똑같이 만든다.
+    """
+    a = psycopg2.connect(LOCAL_DB_URL)
+    try:
+        a.cursor().execute("insert into pets (user_id, name) values (%s, '첫째')", (user,))
+
+        errors: list[str] = []
+
+        def insert_second():
+            b = psycopg2.connect(LOCAL_DB_URL)
+            b.autocommit = True
+            try:
+                b.cursor().execute("insert into pets (user_id, name) values (%s, '둘째')", (user,))
+            except psycopg2.Error as e:
+                errors.append(str(e))
+            finally:
+                b.close()
+
+        t = threading.Thread(target=insert_second)
+        t.start()
+        t.join(timeout=1)
+        assert t.is_alive(), "B는 A가 커밋할 때까지 잠금에서 기다려야 한다"
+        a.commit()
+        t.join(timeout=10)
+    finally:
+        a.close()
+
+    cur = conn.cursor()
+    cur.execute("select count(*) from pets where user_id = %s", (user,))
+    assert cur.fetchone()[0] == 1
+    assert errors and "pet slot limit" in errors[0]
+
+
+def test_seeded_pet_slot_item_exists(conn):
+    cur = conn.cursor()
+    cur.execute("select count(*) from items where type = 'pet_slot'")
+    assert cur.fetchone()[0] >= 1
 
 
 def test_buy_pet_slot_still_raises_limit(conn, user):
