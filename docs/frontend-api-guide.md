@@ -26,10 +26,11 @@
 | 펫 목록·생성·이름 변경·삭제 | 테이블 `pets` | [3.2](#32-펫) |
 | 펫 사진 업로드 | Storage 버킷 `pet-photos` | [3.3](#33-펫-사진) |
 | 펫 쓰다듬기 (하트) | RPC `pet_interact` | [4](#4-rpc-함수) |
-| 펫 부르기 기록 | RPC `record_pet_call` | [4](#4-rpc-함수) |
+| 펫 등장 횟수 보고 | RPC `report_pet_calls` | [3.7](#37-사용시간-업로드) |
 | 출석 체크 | RPC `check_in` | [4](#4-rpc-함수) |
-| 미션 판정 | 폰 분석기 (`Missions.kt`) | [3.4](#34-미션) |
-| 미션 보상 받기 | RPC `claim_mission_reward` | [3.4](#34-미션) |
+| 오늘의 미션 보기 | 테이블 `user_missions` + `missions` | [3.4](#34-미션) |
+| 미션 보상 받기 | RPC `complete_mission` (안 불러도 자정에 자동 정산) | [3.4](#34-미션) |
+| 사용시간 업로드 | 테이블 `daily_usage` | [3.7](#37-사용시간-업로드) |
 | 코인 잔액 | RPC `coin_balance` | [3.5](#35-코인) |
 | 상점 목록 | 테이블 `items` | [3.6](#36-상점--내-아이템) |
 | 아이템 구매 | RPC `buy_item` | [4](#4-rpc-함수) |
@@ -87,9 +88,9 @@ const token = data.session?.access_token;
 | 수정 | `nickname`, `goal_minutes`, `focus_start`, `focus_end`, `bedtime`, `fcm_token`만 |
 | 생성 | 필요 없음 (가입 시 자동 생성) |
 
-- `goal_minutes`: 하루 목표 사용시간(분), 기본값 60
+- `goal_minutes`: 하루 목표 사용시간(분), 기본값 60. 사용시간 미션의 목표가 된다(3.4)
 - `focus_start`, `focus_end`, `bedtime`: `"HH:MM:SS"` 형식 시간
-- `fcm_token`: 푸시 토큰 저장 칸. 서버 미션 알림은 꺼져 있어(ADR-37) 지금은 쓰이지 않는다
+- `fcm_token`: 푸시 토큰 저장 칸. 서버가 매일 KST 06:05에 이 토큰으로 오늘의 미션 알림을 보낸다
 - `pet_slot_limit`: 읽기 전용, 보유 가능한 펫 수
 
 ```ts
@@ -133,23 +134,37 @@ const { data } = await supabase.storage.from('pet-photos').createSignedUrl(path,
 
 ### 3.4 미션
 
-**미션은 폰이 판정하고, 서버는 코인만 준다** (ADR-37). 사용시간은 서버로 보내지 않는다.
+**미션은 서버가 만들고 판정한다** (ADR-39). 앱은 사용시간을 올리고(3.7) 미션을 읽기만 하면 된다.
 
-- 미션 목표·판정은 폰 분석기(AI 레포 `kotlin_port`의 `Missions.kt`)가 한다. 미션 종류는 하루(`daily`)와 야간(`night`) 두 가지다.
-- 분석기가 미션을 **성공(SUCCEEDED)**으로 판정하면 `claim_mission_reward`를 부른다.
+테이블 `user_missions` (내 미션 상태) + `missions` (미션 내용). 둘 다 조회만 가능하다.
+
+서버가 매일 **KST 00:10**에 사용자마다 미션 2개를 새로 만든다(ADR-40). 날짜 기준은 한국 시간(KST)이다.
+
+| 미션 | 예시 제목 | 성공 조건 | 보상 |
+|---|---|---|---|
+| 사용시간 | `숏폼 60분 이내로 보기` | 그날 올라온 숏폼 시청 분(3.7 ①)의 **합계**가 `profiles.goal_minutes` 이하 | 20코인 |
+| 펫 호출 | `오늘 펫 2회 이하로 보기` | 그날 보고한 펫 등장 횟수(3.7 ②)가 목표 이하 (어제 횟수 - 1, 최소 2회) | 20코인 |
+
+- 사용시간 미션의 목표는 **만들어지는 순간(00:10)의 `goal_minutes`**로 고정된다. 낮에 목표를 바꾸면 다음 날 미션부터 반영된다.
+- 판정은 00:05에 그때까지 올라온 값으로 한다. 어제 마지막 업로드 이후에 본 숏폼은 빠진다.
 
 ```ts
-const { data: coins } = await supabase.rpc('claim_mission_reward', {
-  p_kind: 'daily',        // 'daily' 또는 'night'
-  p_date: '2026-09-24',   // 그 미션의 날짜 (KST, YYYY-MM-DD)
-});
-// coins: 이번에 받은 코인 (20, 이미 받았으면 0)
+const { data: missions } = await supabase
+  .from('user_missions')
+  .select('id, status, coins_earned, missions(title, metric, target_minutes, target_count, reward_coins, valid_date)');
 ```
 
-- 한 번에 **20코인**. 같은 `p_kind`·`p_date`는 **한 번만** 받는다. 다시 불러도 에러 없이 `0`이 온다. 그래서 재시도해도 안전하다.
-- `p_date`는 **최근 7일 이내(오늘 포함)이면서 가입일 이후**만 받는다. 벗어나면 `mission date out of range` 에러가 난다.
-- 야간 미션처럼 자정을 넘는 미션은 어느 날짜로 보낼지 앱에서 하나로 정해 두고 계속 같은 기준을 쓴다. 서버는 범위만 검사한다.
-- 서버 테이블 `missions`·`user_missions`는 남아 있지만 **새 미션은 더 이상 만들지 않는다.** 대시보드 미션 카드는 폰 분석기 결과로 그린다.
+| 필드 | 설명 |
+|---|---|
+| `user_missions.id` | 보상 받을 때 `complete_mission`에 넘기는 id |
+| `status` | `in_progress` / `completed` / `failed` |
+| `missions.metric` | `usage_minutes`(사용시간 N분 이하) 또는 `pet_calls`(펫 호출 N회 이하) |
+| `missions.target_minutes` / `target_count` | metric에 따라 둘 중 하나만 값이 있음 |
+| `missions.valid_date` | 미션 날짜 |
+
+**보상은 미션 날짜가 지난 뒤에 받을 수 있다.** 오늘 미션은 오늘 받을 수 없고, 다음 날부터 `complete_mission`으로 받는다. 받지 않아도 서버가 매일 KST 00:05에 어제 미션을 자동으로 정산한다.
+
+**그날 사용시간이 한 번도 업로드되지 않았으면(3.7) 미션은 실패로 처리된다.**
 
 ### 3.5 코인
 
@@ -164,7 +179,7 @@ const { data: balance } = await supabase.rpc('coin_balance'); // number
 | 필드 | 설명 |
 |---|---|
 | `amount` | 양수 = 획득, 음수 = 사용 |
-| `reason` | 획득/사용 이유 (예: `attendance`, `mission_reward`, `item_purchase`) |
+| `reason` | 획득/사용 이유 (예: `attendance`, `mission_complete`, `mission_settle`, `item_purchase`) |
 
 ### 3.6 상점 / 내 아이템
 
@@ -181,11 +196,34 @@ const { data: balance } = await supabase.rpc('coin_balance'); // number
   2. 테마에 속한 아이템은 그 테마를 먼저 사야 살 수 있다.
   3. 같은 테마 안에서는 `sort_order`가 앞선 아이템을 모두 가져야 다음 것을 살 수 있다.
 
-### 3.7 사용시간 업로드 (쓰지 않음)
+### 3.7 사용시간 업로드
 
-사용시간은 폰 안에서만 분석하고 서버로 보내지 않는다(ADR-37). 테이블 `daily_usage`는 남아 있지만 올릴 필요가 없다.
+폰 오버레이가 잰 두 숫자를 올린다(ADR-41). 미션 판정(3.4)이 이 값을 본다.
 
-- 감지 앱 목록 `detected_apps`(조회만)와 켜고 끄는 설정 `user_detected_apps`(`app_id`, `is_enabled`)는 그대로 쓸 수 있다.
+**① 숏폼 시청 분: 테이블 `daily_usage`.** 오버레이가 숏폼(쇼츠·릴스) 화면으로 판정한 시간을 **하루·앱마다 한 줄**로 올린다. 같은 날 다시 올리면 upsert로 덮어쓰지만, **값이 줄어들지는 않는다**(서버가 더 큰 값을 남긴다. 앱 데이터를 지우거나 재설치해서 기기 기록이 0부터 다시 시작해도 그날 올라간 값은 유지된다).
+
+```ts
+await supabase.from('daily_usage').upsert({
+  user_id: userId,
+  app_id: appId,            // detected_apps.id
+  usage_date: '2026-09-23', // 기기 날짜 (KST)
+  minutes: 42,              // 그날 누적 분
+});
+```
+
+- `app_id`는 테이블 `detected_apps`(조회만)에서 가져온다. 현재 틱톡, 인스타그램, 유튜브가 있다.
+- 사용시간 미션은 그날 올라온 행을 **모두 더해서** 판정한다. 사용자가 감지 앱으로 고른 앱만 올린다.
+- 오버레이가 돈 날은 숏폼을 안 봤어도 0분짜리 행을 올린다. 행이 없으면 서버는 "그날 앱이 보고하지 않았다"로 보고 미션을 실패 처리한다. **오버레이가 한 번도 돌지 않은 날은 올리지 않는다**(0분으로 올리면 성공으로 판정된다).
+- 사용자가 추적할 앱을 켜고 끄는 설정은 `user_detected_apps`(`app_id`, `is_enabled`)에 저장한다.
+
+**② 펫 등장 횟수: RPC `report_pet_calls`.** 그날 펫이 처음 나타난 횟수의 **하루 누적값**을 보낸다(더하기가 아니라 덮어쓰기, 역시 줄어들지 않는다).
+
+```ts
+await supabase.rpc('report_pet_calls', { p_date: '2026-09-29', p_calls: 3 });
+```
+
+- 날짜가 미래이거나, 7일보다 오래됐거나, 가입일 이전이면 **에러 없이 무시**한다. 7일치를 한 번에 보내도 안전하다.
+- `record_pet_call`(부를 때마다 +1)은 쓰지 않는다. 오버레이는 네이티브 서비스라 펫이 뜰 때마다 서버를 부를 수 없어서, 하루 합계를 모아 보낸다.
 
 ### 3.8 알림 설정
 
@@ -210,9 +248,10 @@ await supabase.rpc('buy_item', {
 |---|---|---|---|
 | `check_in` | 없음 | `[{streak, coins_awarded}]` | 출석. 5코인, 연속 7일마다 +30코인. 같은 날 다시 불러도 코인은 한 번만 들어온다(`coins_awarded` = 0) |
 | `pet_interact` | `p_pet_id` | `[{new_affection, hearts_gained}]` | 애착도 +5. 펫당 하루 최대 +50, 최대 100 |
-| `record_pet_call` | 없음 | 숫자 (오늘 누적 호출 수) | 펫을 부를 때마다 호출 |
+| `report_pet_calls` | `p_date`, `p_calls` | 없음 | 그날 펫 등장 횟수 누적값 보고 ([3.7](#37-사용시간-업로드)). 범위 밖 날짜는 무시 |
+| `record_pet_call` | 없음 | 숫자 (오늘 누적 호출 수) | 쓰지 않음. `report_pet_calls`로 대체 |
 | `coin_balance` | 없음 | 숫자 (현재 코인 잔액) | 잔액 조회 |
-| `claim_mission_reward` | `p_kind`, `p_date` | 숫자 (받은 코인, 이미 받았으면 0) | 폰이 성공 판정한 미션의 보상 받기 ([3.4](#34-미션)) |
+| `complete_mission` | `p_user_mission_id`, `p_request_id` | 없음 | 미션 보상 받기 ([3.4](#34-미션)) |
 | `buy_item` | `p_item_id`, `p_request_id` | 없음 | 아이템 구매 |
 
 **`p_request_id`란?** 네트워크 재시도로 같은 요청이 두 번 가도 코인이 두 번 처리되지 않게 하는 값이다. **버튼을 누를 때마다 새 UUID를 만들고, 재시도할 때는 같은 UUID를 다시 쓴다.**
@@ -228,13 +267,18 @@ await supabase.rpc('buy_item', {
 | `buy_item` | `이미 보유한 아이템입니다` | 중복 구매 |
 | `buy_item` | `테마를 먼저 구매해야 합니다` | 테마 없이 그 테마 아이템 구매 |
 | `buy_item` | `앞 단계 아이템을 먼저 구매해야 합니다` | 순서 건너뜀 |
-| `claim_mission_reward` | `mission date out of range` | 미래 날짜, 7일보다 오래된 날짜, 가입 전 날짜 |
-| `claim_mission_reward` | `invalid mission kind` | `p_kind`가 `daily`·`night`가 아님 (소문자만) |
+| `complete_mission` | `mission not finished` | 아직 미션 날짜가 안 지남 (오늘 미션) |
+| `complete_mission` | `mission target not met` | 목표 달성 실패 |
+| `complete_mission` | `mission not found` | 없는 미션 id |
+| `complete_mission` | `mission not found or already completed` | 이미 실패 처리된 미션 등 |
+| `complete_mission` | `only daily missions can be claimed` | 주간 미션은 아직 미지원 |
 | `pet_interact` | `pet not found` | 내 펫이 아님 |
+
+이미 보상을 받은(자동 정산 포함) 미션에 `complete_mission`을 다시 부르면 에러 없이 조용히 성공한다.
 
 ### 부르면 안 되는 함수
 
-`complete_mission`, `mission_achieved`, `settle_missions`, `generate_daily_missions`, `users_to_notify_today`, `weekly_report*`: 서버 전용이거나 서버 미션을 끈 뒤 쓰지 않는 함수다(`complete_mission`은 서버 미션용이라 호출해도 받을 미션이 없다). 권한이 없어서 에러가 나거나, 주간 리포트처럼 FastAPI가 이미 가공해서 주는 것들이다.
+`claim_mission_reward`, `mission_achieved`, `settle_missions`, `generate_daily_missions`, `users_to_notify_today`, `weekly_report*`: 서버 전용이다. 권한이 없어서 에러가 나거나, 주간 리포트처럼 FastAPI가 이미 가공해서 주는 것들이다. `claim_mission_reward`는 폰 판정(ADR-37) 때 쓰던 보상 함수로, 서버 정산과 겹쳐 코인이 두 번 나가지 않게 막아 두었다.
 
 ## 5. FastAPI 엔드포인트
 

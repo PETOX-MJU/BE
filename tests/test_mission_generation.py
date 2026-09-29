@@ -16,7 +16,7 @@ pytestmark = requires_db
 
 
 def test_generate_daily_missions_concurrent_runs_do_not_duplicate(conn, user):
-    """같은 함수를 동시에 두 번 호출해도 유저당 오늘 미션은 중복 없이 3개(앱 2 + 펫 1)여야 한다."""
+    """같은 함수를 동시에 두 번 호출해도 유저당 오늘 미션은 중복 없이 2개(사용시간 1 + 펫 1)여야 한다."""
     cur = conn.cursor()
     cur.execute("select id from detected_apps order by display_name limit 2")
     for (app_id,) in cur.fetchall():
@@ -56,4 +56,4 @@ def test_generate_daily_missions_concurrent_runs_do_not_duplicate(conn, user):
         (user,),
     )
     count = cur.fetchone()[0]
-    assert count == 3, f"오늘 미션이 유저당 3개여야 하는데 {count}개다. (예외: {errors})"
+    assert count == 2, f"오늘 미션이 유저당 2개여야 하는데 {count}개다. (예외: {errors})"
