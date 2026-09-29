@@ -407,7 +407,7 @@ def test_pet_calls_are_private_and_not_client_writable(conn, user, other_user):
     """calls가 곧 미션 성공 판정이라 클라이언트가 직접 쓰면 0으로 적어 코인을 가져간다.
 
     #22가 pets.affection·profiles.pet_slot_limit에 대해 막은 것과 같은 이유로,
-    select만 열고 쓰기는 record_pet_call()에만 맡긴다.
+    select만 열고 쓰기는 RPC(record_pet_call, report_pet_calls)에만 맡긴다.
     """
     _pet_calls(conn, other_user, -1, 4)
 

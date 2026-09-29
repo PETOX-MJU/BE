@@ -9,6 +9,7 @@
 -- ADR-40: 사용시간 미션을 "앱별 어제-10분" 2개에서 "감지 앱 합계 ≤ 목표 시간" 1개로 바꾼다.
 -- 목표는 생성 시점의 profiles.goal_minutes로 고정된다. 펫 호출 미션은 그대로다.
 -- 판정(mission_achieved)은 app_id가 null이면 그날 올라온 daily_usage를 모두 더한다.
+-- daily_usage.minutes는 폰 오버레이가 잰 숏폼 시청 분이다(ADR-41).
 create or replace function generate_daily_missions()
 returns void
 language plpgsql
@@ -85,6 +86,57 @@ select cron.schedule(
 
 -- 서버 정산과 함께 열려 있으면 같은 날 코인이 두 번 나간다. 되돌릴 수 있게 함수는 남긴다.
 revoke execute on function claim_mission_reward(text, date) from authenticated;
+
+-- ADR-41: 사용시간은 폰 오버레이가 잰 "숏폼(쇼츠·릴스) 시청 분"이다. 폰은 기기에 쌓은 하루 누적값을
+-- 앱을 켤 때마다 최근 7일치씩 다시 올린다. 앱 데이터를 지우거나 재설치하면 기기 기록이 0부터
+-- 다시 시작하므로, 같은 날의 값은 줄어들지 않게 받는다.
+create or replace function keep_daily_usage_max()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.minutes := greatest(old.minutes, new.minutes);
+  return new;
+end;
+$$;
+
+create trigger daily_usage_keep_max
+  before update on daily_usage
+  for each row execute function keep_daily_usage_max();
+
+-- 펫 등장 횟수도 폰이 하루 누적값을 올린다(record_pet_call의 1회씩 더하기 대신).
+-- 범위 밖 날짜는 에러 없이 무시한다: FE는 에러가 나면 남은 날짜를 건너뛰어서, 가입 전 날짜를
+-- 거부하면 새 가입자의 횟수가 일주일 동안 하나도 올라가지 않는다.
+create or replace function report_pet_calls(p_date date, p_calls int)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_today date := (now() at time zone 'Asia/Seoul')::date;
+  v_joined date;
+begin
+  if auth.uid() is null or p_date is null or p_calls is null or p_calls < 0 then
+    return;
+  end if;
+
+  select (created_at at time zone 'Asia/Seoul')::date into v_joined
+  from profiles where id = auth.uid();
+
+  if p_date > v_today or p_date < greatest(v_today - 7, v_joined) then
+    return;
+  end if;
+
+  insert into daily_pet_calls (user_id, usage_date, calls)
+  values (auth.uid(), p_date, p_calls)
+  on conflict (user_id, usage_date)
+  do update set calls = greatest(daily_pet_calls.calls, excluded.calls);
+end;
+$$;
+
+revoke execute on function report_pet_calls(date, int) from public, anon;
+grant execute on function report_pet_calls(date, int) to authenticated;
 
 -- 배포한 날에도 오늘 미션이 있게 한다. 오늘 미션이 이미 있는 사용자는 건너뛴다.
 select generate_daily_missions();
